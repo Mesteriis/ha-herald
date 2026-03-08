@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/Mesteriis/ha-herald/compare/v0.4.0...v0.5.0) (2026-03-08)
+
+
+### Features
+
+* initial herald release ([f9ca118](https://github.com/Mesteriis/ha-herald/commit/f9ca1181ff5e2803fb14a13edac572666cff320f))
+
 ## 0.4.0 - 2026-03-08
 
 - upgraded Herald to the AI Notification Center architecture with the thin `herald.notify` contract
