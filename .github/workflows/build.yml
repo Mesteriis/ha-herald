@@ -1,0 +1,38 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Python tooling
+        run: python -m pip install pytest pytest-asyncio ruff voluptuous aiohttp
+      - name: Python syntax
+        run: python -m py_compile custom_components/herald/*.py tests/*.py
+      - name: Ruff
+        run: ruff check custom_components/herald tests
+      - name: Pytest
+        run: pytest -q tests
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Install frontend tooling
+        run: npm ci
+      - name: TypeScript check
+        run: npm run check
+      - name: Build frontend bundle
+        run: npm run build
+      - name: Upload frontend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: herald-frontend
+          path: custom_components/herald/frontend/herald-card.js

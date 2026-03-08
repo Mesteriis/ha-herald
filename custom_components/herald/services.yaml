@@ -1,0 +1,140 @@
+notify:
+  name: Notify
+  description: Publish a notification into the Herald pipeline.
+  fields:
+    flow:
+      name: Flow
+      description: Optional flow name, for example security_alerts or energy_events.
+      example: energy_events
+      selector:
+        text: {}
+    level:
+      name: Level
+      description: Severity level.
+      example: warning
+      selector:
+        select:
+          options:
+            - debug
+            - info
+            - notice
+            - warning
+            - critical
+            - security
+            - ai
+            - system
+    title:
+      name: Title
+      selector:
+        text: {}
+    message:
+      name: Message
+      required: true
+      selector:
+        text:
+          multiline: true
+    users:
+      name: Users
+      description: Optional list of user keys for per-user routing and translation.
+      selector:
+        object: {}
+    channels:
+      name: Channels
+      description: Optional list of channel names to force.
+      selector:
+        object: {}
+    metadata:
+      name: Metadata
+      description: Arbitrary metadata such as source, device, room, or automation_id.
+      selector:
+        object: {}
+    notification_id:
+      name: Notification ID
+      description: Optional external notification id. If omitted Herald will generate one.
+      selector:
+        text: {}
+    include_actions:
+      name: Include actions
+      description: Add acknowledge and snooze actions for supported channels.
+      selector:
+        boolean: {}
+generate_dashboard:
+  name: Generate dashboard
+  description: Generate a YAML Lovelace dashboard for Herald.
+  fields:
+    path:
+      name: Path
+      example: dashboards/herald_dashboard.yaml
+      selector:
+        text: {}
+    title:
+      name: Title
+      example: Herald Dashboard
+      selector:
+        text: {}
+    preset:
+      name: Preset
+      description: Dashboard layout preset.
+      selector:
+        select:
+          options:
+            - overview
+            - rooms
+            - roles
+set_flow_state:
+  name: Set flow state
+  description: Enable or disable a flow at runtime.
+  fields:
+    flow:
+      name: Flow
+      required: true
+      selector:
+        text: {}
+    enabled:
+      name: Enabled
+      required: true
+      selector:
+        boolean: {}
+trace_snapshot:
+  name: Trace snapshot
+  description: Return recent Herald traces and deliveries.
+acknowledge:
+  name: Acknowledge
+  description: Mark one Herald notification as acknowledged.
+  fields:
+    notification_id:
+      name: Notification ID
+      required: true
+      selector:
+        text: {}
+    actor:
+      name: Actor
+      description: Optional human-readable actor name.
+      selector:
+        text: {}
+snooze_flow:
+  name: Snooze flow
+  description: Temporarily mute one Herald flow for a number of minutes.
+  fields:
+    flow:
+      name: Flow
+      required: true
+      selector:
+        text: {}
+    minutes:
+      name: Minutes
+      selector:
+        number:
+          min: 1
+          max: 1440
+          mode: box
+    notification_id:
+      name: Notification ID
+      description: Optional notification id used to clear related push artifacts.
+      selector:
+        text: {}
+    actor:
+      name: Actor
+      description: Optional human-readable actor name.
+      selector:
+        text: {}

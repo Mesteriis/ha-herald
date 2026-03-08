@@ -1,0 +1,43 @@
+{
+  "title": "Herald Notification Center",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Herald Notification Center",
+        "description": "Создайте запись Herald Notification Framework.",
+        "data": {
+          "name": "Имя",
+          "host": "Хост Ollama",
+          "model": "Модель Ollama",
+          "start": "Начало тихих часов",
+          "end": "Конец тихих часов"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Поддерживается только один экземпляр Herald."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Параметры Herald",
+        "description": "Настройте Ollama, тихие часы и personality для summary по каждому flow.",
+        "data": {
+          "host": "Хост Ollama",
+          "model": "Модель Ollama",
+          "start": "Начало тихих часов",
+          "end": "Конец тихих часов"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {"name": "Статус"},
+      "notifications_today": {"name": "Уведомлений сегодня"},
+      "last_notification": {"name": "Последнее уведомление"},
+      "queue_size": {"name": "Размер очереди"}
+    }
+  }
+}

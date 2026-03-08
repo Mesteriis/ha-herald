@@ -1,0 +1,43 @@
+{
+  "title": "Herald Notification Center",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Herald Notification Center",
+        "description": "Create the Herald notification framework entry.",
+        "data": {
+          "name": "Name",
+          "host": "Ollama host",
+          "model": "Ollama model",
+          "start": "Quiet hours start",
+          "end": "Quiet hours end"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Only one Herald instance is supported."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Herald options",
+        "description": "Adjust Ollama, quiet hours, and per-flow summary personalities.",
+        "data": {
+          "host": "Ollama host",
+          "model": "Ollama model",
+          "start": "Quiet hours start",
+          "end": "Quiet hours end"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {"name": "Status"},
+      "notifications_today": {"name": "Notifications today"},
+      "last_notification": {"name": "Last notification"},
+      "queue_size": {"name": "Queue size"}
+    }
+  }
+}

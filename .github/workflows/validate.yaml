@@ -1,0 +1,26 @@
+name: validate
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate JSON files
+        run: |
+          python -m json.tool hacs.json >/dev/null
+          python -m json.tool custom_components/herald/manifest.json >/dev/null
+          python -m json.tool custom_components/herald/strings.json >/dev/null
+          python -m json.tool custom_components/herald/translations/en.json >/dev/null
+          python -m json.tool custom_components/herald/translations/ru.json >/dev/null
+          python -m json.tool custom_components/herald/translations/es.json >/dev/null
+          python -m json.tool custom_components/herald/translations/fr.json >/dev/null
+      - name: Validate HACS metadata
+        uses: hacs/action@main
+        with:
+          category: integration

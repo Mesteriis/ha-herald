@@ -1,0 +1,835 @@
+herald_package:
+
+  version: 0.2
+  repo: ha-herald
+
+  paths:
+
+    integration: custom_components/herald
+    frontend: www
+    docs: docs
+    tests: tests
+
+  package_structure:
+
+    custom_components/herald:
+
+      __init__.py:
+        role: integration_entrypoint
+        responsibilities:
+          - setup_integration
+          - load_config
+          - init_coordinator
+          - register_services
+          - load_registry
+          - start_event_bus
+
+      manifest.json:
+        role: homeassistant_manifest
+        responsibilities:
+          - define_domain
+          - hacs_metadata
+          - dependencies
+          - config_flow
+
+      const.py:
+        role: constants
+        responsibilities:
+          - domain_name
+          - default_values
+          - flow_names
+          - severity_levels
+          - event_types
+
+      coordinator.py:
+        role: lifecycle_manager
+        responsibilities:
+          - manage_modules
+          - reload_config
+          - orchestrate_pipeline
+          - monitor_health
+
+      config_flow.py:
+        role: ui_configuration
+        responsibilities:
+          - initial_setup
+          - ollama_config
+          - channel_config
+          - flow_defaults
+
+      services.py:
+        role: service_registry
+        responsibilities:
+          - register_notify_service
+          - validate_payload
+          - dispatch_to_engine
+
+      services.yaml:
+        role: ha_service_schema
+        responsibilities:
+          - service_fields
+          - documentation
+
+      diagnostics.py:
+        role: debug_support
+        responsibilities:
+          - export_runtime_state
+          - pipeline_trace
+          - config_snapshot
+
+      sensor.py:
+        role: ha_entities
+        responsibilities:
+          - queue_sensor
+          - stats_sensor
+          - health_sensor
+
+      registry.py:
+        role: runtime_registry
+        responsibilities:
+          - store_flows
+          - store_users
+          - store_channels
+          - store_plugins
+
+      scheduler.py:
+        role: scheduled_jobs
+        responsibilities:
+          - digest_scheduler
+          - retry_jobs
+          - quiet_hours_handler
+
+  engine_modules:
+
+    engine/pipeline.py:
+      role: notification_pipeline
+      responsibilities:
+        - build_context
+        - resolve_flow
+        - ai_decision
+        - ai_rewrite
+        - route
+        - enqueue
+        - deliver
+
+    engine/context_builder.py:
+      role: context_collector
+      responsibilities:
+        - collect_global_context
+        - collect_user_context
+        - collect_entity_context
+
+    engine/flow_resolver.py:
+      role: flow_processor
+      responsibilities:
+        - match_flow
+        - validate_flow_rules
+        - merge_context
+
+    engine/router.py:
+      role: routing_engine
+      responsibilities:
+        - choose_channel
+        - evaluate_presence
+        - evaluate_severity
+        - evaluate_activity
+
+    engine/queue.py:
+      role: notification_queue
+      responsibilities:
+        - enqueue
+        - deduplicate
+        - aggregate
+        - flush_queue
+
+    engine/delivery.py:
+      role: message_delivery
+      responsibilities:
+        - send_tts
+        - send_push
+        - send_telegram
+        - send_dashboard
+
+  ai_modules:
+
+    ai/client.py:
+      role: ai_provider_interface
+      responsibilities:
+        - connect_ollama
+        - execute_prompt
+
+    ai/rewrite.py:
+      role: message_rewriter
+      responsibilities:
+        - rewrite_notification
+        - apply_personality
+
+    ai/decision.py:
+      role: ai_filter
+      responsibilities:
+        - evaluate_importance
+        - suppress_noise
+
+    ai/summary.py:
+      role: batch_summarizer
+      responsibilities:
+        - summarize_events
+        - generate_digest
+
+    ai/translate.py:
+      role: localization_ai
+      responsibilities:
+        - translate_message
+        - detect_language
+
+    ai/correlation.py:
+      role: event_correlation
+      responsibilities:
+        - detect_patterns
+        - combine_events
+
+    ai/learning.py:
+      role: preference_learning
+      responsibilities:
+        - track_user_behavior
+        - adapt_routing
+
+  presence_modules:
+
+    presence/presence_manager.py:
+      role: presence_resolver
+      responsibilities:
+        - detect_user_home
+        - detect_room
+
+    presence/activity_detector.py:
+      role: activity_analysis
+      responsibilities:
+        - detect_tv_watching
+        - detect_sleep
+        - detect_work
+
+  channel_modules:
+
+    channels/base_channel.py:
+      role: abstract_channel
+      responsibilities:
+        - send_message
+        - validate_payload
+
+    channels/tts_channel.py:
+      role: media_player_tts
+      responsibilities:
+        - speak_message
+        - volume_control
+
+    channels/telegram_channel.py:
+      role: telegram_delivery
+      responsibilities:
+        - send_message
+
+    channels/mobile_push_channel.py:
+      role: mobile_app_push
+      responsibilities:
+        - send_push
+
+    channels/dashboard_channel.py:
+      role: lovelace_notifications
+      responsibilities:
+        - show_card
+
+  flow_modules:
+
+    flows/flow_manager.py:
+      role: flow_registry
+      responsibilities:
+        - register_flows
+        - enable_disable
+
+    flows/rate_limiter.py:
+      role: spam_protection
+      responsibilities:
+        - enforce_limits
+
+    flows/conditions.py:
+      role: condition_engine
+      responsibilities:
+        - evaluate_conditions
+        - check_entities
+
+  dashboard:
+
+    www/herald-card.ts:
+      role: lovelace_card
+      responsibilities:
+        - show_notifications
+        - show_queue
+        - toggle_flows
+        - set_language
+        - set_personality
+
+  auto_dashboard:
+
+    dashboard_generator.py:
+      role: dashboard_creator
+      responsibilities:
+        - generate_cards
+        - generate_views
+        - bind_entities
+
+  analytics_modules:
+
+    analytics/stats.py:
+      role: metrics_engine
+      responsibilities:
+        - compute_daily_stats
+        - compute_flow_stats
+
+    analytics/storage.py:
+      role: statistics_storage
+      responsibilities:
+        - store_events
+        - query_history
+
+  plugin_system:
+
+    plugins/plugin_loader.py:
+      role: plugin_manager
+      responsibilities:
+        - discover_plugins
+        - load_plugins
+
+    plugins/plugin_api.py:
+      role: extension_api
+      responsibilities:
+        - register_channel
+        - register_flow
+
+  webhook_modules:
+
+    api/webhook.py:
+      role: external_events
+      responsibilities:
+        - receive_webhook
+        - validate_event
+        - dispatch_notification
+
+  cluster_modules:
+
+    cluster/node.py:
+      role: cluster_node
+      responsibilities:
+        - register_node
+        - sync_events
+
+    cluster/sync.py:
+      role: cluster_sync
+      responsibilities:
+        - replicate_notifications
+
+  tests:
+
+    tests/test_pipeline.py:
+      role: pipeline_tests
+
+    tests/test_router.py:
+      role: routing_tests
+
+    tests/test_ai.py:
+      role: ai_tests
+
+    tests/test_queue.py:
+      role: queue_tests
+
+    tests/test_flows.py:
+      role: flow_tests
+
+
+herald:
+
+  version: 0.2
+  name: Herald Notification Intelligence System
+
+  description: >
+    Интеллектуальная система уведомлений для Home Assistant.
+    Поддерживает AI обработку сообщений, маршрутизацию,
+    пользовательский контекст и динамическую доставку.
+
+# ============================================================
+# CORE
+# ============================================================
+
+  core:
+
+    modules:
+
+      config
+      coordinator
+      services
+      event_bus
+      registry
+      scheduler
+
+    entities:
+
+      sensor.herald_status
+      sensor.herald_queue_size
+      sensor.herald_notifications_today
+      sensor.herald_last_notification
+
+# ============================================================
+# NOTIFICATION ENGINE
+# ============================================================
+
+  notification_engine:
+
+    pipeline:
+
+      - event
+      - context_builder
+      - flow_resolver
+      - ai_decision
+      - ai_rewrite
+      - router
+      - queue
+      - delivery
+
+    services:
+
+      herald.notify:
+
+        fields:
+
+          title
+          message
+          level
+          flow
+          user
+          context_override
+
+# ============================================================
+# GLOBAL CONTEXT
+# ============================================================
+
+  global_context:
+
+    sources:
+
+      - time
+      - weather
+      - house_mode
+      - calendar
+      - presence
+      - activity
+
+    entity_sources:
+
+      - sensor
+      - binary_sensor
+      - media_player
+      - device_tracker
+      - input_boolean
+      - input_select
+      - input_number
+
+# ============================================================
+# FLOWS
+# ============================================================
+
+  flows:
+
+    security:
+
+      enabled: true
+      severity: critical
+
+      channels:
+
+        - telegram
+        - tts
+
+      context_entities:
+
+        - alarm_control_panel.home
+        - binary_sensor.front_door
+        - camera.front_door
+
+    system:
+
+      enabled: true
+      severity: info
+
+      channels:
+
+        - dashboard
+        - tts
+
+    device:
+
+      enabled: true
+      severity: notice
+
+    energy:
+
+      enabled: true
+      severity: warning
+
+      context_entities:
+
+        - sensor.energy_today
+        - sensor.solar_production
+
+    network:
+
+      enabled: true
+      severity: warning
+
+      context_entities:
+
+        - sensor.router_uptime
+        - binary_sensor.internet
+
+    camera:
+
+      enabled: true
+      severity: warning
+
+      rate_limit:
+
+        max_notifications: 3
+        per_seconds: 120
+
+    timer:
+
+      enabled: true
+      severity: info
+
+    ai:
+
+      enabled: true
+      severity: info
+
+# ============================================================
+# USER CONTEXT SYSTEM
+# ============================================================
+
+  user_context:
+
+    description: >
+      Каждый пользователь может указать собственный набор
+      сущностей Home Assistant, которые должны учитываться
+      при обработке уведомлений.
+
+    users:
+
+      alex:
+
+        language: ru
+
+        context_entities:
+
+          - device_tracker.alex_phone
+          - binary_sensor.office_presence
+          - media_player.office_speaker
+
+        preferred_channels:
+
+          - tts
+          - telegram
+
+      wife:
+
+        language: es
+
+        context_entities:
+
+          - device_tracker.wife_phone
+          - binary_sensor.bedroom_presence
+
+        preferred_channels:
+
+          - mobile_push
+
+# ============================================================
+# ROUTER
+# ============================================================
+
+  router:
+
+    strategies:
+
+      - presence_based
+      - user_based
+      - room_based
+      - time_based
+      - severity_based
+      - activity_based
+
+    rules:
+
+      - condition: user_home
+        route: room_speaker
+
+      - condition: nobody_home
+        route: mobile_push
+
+      - condition: night
+        route: silent_push
+
+      - condition: critical
+        route: all_channels
+
+# ============================================================
+# QUEUE SYSTEM
+# ============================================================
+
+  queue:
+
+    enabled: true
+
+    features:
+
+      aggregation: true
+      deduplication: true
+      batching: true
+      delay_delivery: true
+
+    summary:
+
+      ai_summary: true
+      max_batch_size: 10
+
+# ============================================================
+# AI SYSTEM
+# ============================================================
+
+  ai:
+
+    provider: ollama
+
+    ollama:
+
+      host: http://ollama.local:11434
+      model: llama3
+
+    modules:
+
+      decision
+      rewrite
+      translate
+      summary
+      personality
+      correlation
+      learning
+
+# ============================================================
+# PERSONALITIES
+# ============================================================
+
+  personalities:
+
+    domovoy:
+
+      tone: friendly
+      style: mystical
+      language: ru
+
+    jarvis:
+
+      tone: neutral
+      style: technical
+      language: en
+
+    veles:
+
+      tone: wise
+      style: mythic
+      language: ru
+
+# ============================================================
+# CHANNELS
+# ============================================================
+
+  channels:
+
+    tts:
+
+      type: media_player
+
+      entities:
+
+        - media_player.kitchen_homepod
+        - media_player.yandex_station
+
+    telegram:
+
+      type: telegram
+
+      chat_id: 123456
+
+    mobile_push:
+
+      type: mobile_app
+
+    dashboard:
+
+      type: lovelace
+
+    persistent:
+
+      type: persistent_notification
+
+# ============================================================
+# QUIET HOURS
+# ============================================================
+
+  quiet_hours:
+
+    enabled: true
+
+    start: "23:00"
+    end: "08:00"
+
+    restrictions:
+
+      mute_tts: true
+      allow_push: true
+      allow_critical: true
+
+# ============================================================
+# ANALYTICS
+# ============================================================
+
+  analytics:
+
+    enabled: true
+
+    metrics:
+
+      notifications_per_day
+      most_active_flow
+      most_used_channel
+      average_response_time
+
+# ============================================================
+# DAILY DIGEST
+# ============================================================
+
+  digest:
+
+    enabled: true
+
+    schedule:
+
+      morning: "08:30"
+      evening: "22:00"
+
+    include:
+
+      events
+      energy
+      security
+      system
+
+# ============================================================
+# CORRELATION ENGINE
+# ============================================================
+
+  correlation:
+
+    enabled: true
+
+    patterns:
+
+      - door_open + motion + camera
+      - motion + presence_unknown
+
+# ============================================================
+# LEARNING SYSTEM
+# ============================================================
+
+  learning:
+
+    enabled: true
+
+    signals:
+
+      notification_ignored
+      notification_opened
+      tts_interrupted
+
+# ============================================================
+# WEBHOOK API
+# ============================================================
+
+  webhooks:
+
+    enabled: true
+
+    endpoints:
+
+      herald/event
+      herald/notify
+
+# ============================================================
+# DASHBOARD
+# ============================================================
+
+  dashboard:
+
+    auto_generate: true
+
+    cards:
+
+      - notifications
+      - queue
+      - flows
+      - users
+      - channels
+      - ai
+      - diagnostics
+      - analytics
+
+# ============================================================
+# EXTENSIONS
+# ============================================================
+
+  extensions:
+
+    plugins:
+
+      custom_channels
+      custom_flows
+      custom_ai_prompts
+      custom_dashboard_cards
+
+# ============================================================
+# CLUSTER MODE
+# ============================================================
+
+  cluster:
+
+    enabled: false
+
+    nodes:
+
+      - herald_main
+      - herald_edge
+
+# ============================================================
+# SECURITY
+# ============================================================
+
+  security:
+
+    priority_flows:
+
+      - security
+      - alarm
+      - fire
+      - water_leak
+
+    delivery:
+
+      repeat_alerts: true
+      multi_channel: true

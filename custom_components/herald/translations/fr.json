@@ -1,0 +1,43 @@
+{
+  "title": "Herald Notification Center",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Herald Notification Center",
+        "description": "Créez l'entrée Herald Notification Framework.",
+        "data": {
+          "name": "Nom",
+          "host": "Hôte Ollama",
+          "model": "Modèle Ollama",
+          "start": "Début des heures calmes",
+          "end": "Fin des heures calmes"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Une seule instance de Herald est prise en charge."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options Herald",
+        "description": "Ajustez Ollama, les heures calmes et les personnalites de resume par flux.",
+        "data": {
+          "host": "Hôte Ollama",
+          "model": "Modèle Ollama",
+          "start": "Début des heures calmes",
+          "end": "Fin des heures calmes"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {"name": "Statut"},
+      "notifications_today": {"name": "Notifications du jour"},
+      "last_notification": {"name": "Dernière notification"},
+      "queue_size": {"name": "Taille de la file"}
+    }
+  }
+}

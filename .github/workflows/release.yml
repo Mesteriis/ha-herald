@@ -1,0 +1,30 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Install frontend tooling
+        run: npm ci
+      - name: Build frontend
+        run: npm run build
+      - name: Package HACS repository
+        run: zip -r herald-hacs.zip custom_components README.md CHANGELOG.md LICENSE hacs.json docs
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            herald-hacs.zip
+            custom_components/herald/frontend/herald-card.js
+            README.md
+            CHANGELOG.md
