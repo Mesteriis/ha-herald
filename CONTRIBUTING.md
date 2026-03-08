@@ -2,37 +2,46 @@
 
 ## Local setup
 
-1. Clone the repository into `config/custom_components/herald`.
+1. Clone the repository into your Home Assistant config or a standalone workspace.
 2. Create a Python 3.11 environment.
-3. Install development tools:
+3. Install the development tools you need.
 
 ```bash
-python3 -m pip install pytest pytest-asyncio ruff voluptuous aiohttp
-npm install
+python3 -m pip install pytest pytest-asyncio ruff voluptuous aiohttp PyYAML Jinja2
+npm ci
 ```
 
-4. Run checks:
+## Checks
+
+Run from the repository root:
 
 ```bash
-python3 -m py_compile *.py tests/*.py
-ruff check .
-pytest -q
+python3 -m py_compile custom_components/herald/*.py tests/*.py
+ruff check custom_components/herald tests
+pytest -q tests
+npm run check
 npm run build
 ```
 
 ## Commit style
 
-Use Conventional Commits whenever practical, for example:
+Use Conventional Commits when practical.
 
-- `feat: add telegram inline keyboard actions`
-- `fix: restore coordinator lookup for sensors`
-- `docs: expand migration notes`
+Examples:
+
+- `feat: add room audio target fallback routing`
+- `fix: recover dashboard resource registration on cold start`
+- `docs: update release and controls documentation`
 
 ## Scope
 
-Please keep changes modular:
+Keep changes modular:
 
-- Core runtime changes in Python
-- Frontend changes in `frontend/`
-- Documentation updates in `docs/`
-- Tests updated alongside behavior changes
+- runtime pipeline changes in `custom_components/herald/`
+- repo docs in `docs/`
+- frontend source in `frontend/`
+- tests updated alongside behavior changes
+
+## Maintainer
+
+Aleksandr Meshchryakov <avm@sh-inc.ru>

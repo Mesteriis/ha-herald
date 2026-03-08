@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+
 from custom_components.herald.flows import async_flow_matches, resolve_requested_flow, severity_allowed
 from custom_components.herald.models import FlowConfig, NotificationContext
 
@@ -81,3 +82,4 @@ def test_severity_resolution_and_fallback() -> None:
     assert resolve_requested_flow(flows, None, "security") == "security_alerts"
     assert resolve_requested_flow(flows, None, "ai") == "ai_events"
     assert resolve_requested_flow(flows, None, "system") == "system_events"
+    assert resolve_requested_flow(flows, "live_contract", "info") == "system_events"

@@ -1,45 +1,34 @@
 # Architecture
 
-## Pipeline
+## Boundaries
 
-```text
-automation -> herald.notify -> context builder -> AI rewrite -> router -> queue -> channels
-```
+Automations do not choose users, devices, channels, or languages.
+They publish the meaning of an event. Herald resolves delivery from Home Assistant state.
 
-## Core modules
+## Runtime layers
 
-- `__init__.py`: YAML import, config entry setup, frontend static path registration
-- `config_flow.py`: UI configuration and options
-- `coordinator.py`: runtime state, queue orchestration, traces, actionable callback handling
-- `router.py`: channel selection, presence-aware delivery, quiet-hours policies, mobile/Telegram action feedback
-- `ai.py`: Ollama rewrite and summary client
-- `presence.py`: people-home, room, mode, quiet-hours snapshot
-- `flows.py`: flow condition evaluation and severity logic
-- `sensor.py`: status, metrics, and diagnostic sensors
-- `diagnostics.py`: redacted runtime diagnostics
-- `frontend/herald-card.ts`: Lovelace UI
+- `request.py`: thin request parsing and legacy compatibility
+- `context_builder.py`: people, rooms, entities, and semantic enrichment
+- `characters.py`: character loading and prompt templates
+- `ai.py`: Ollama rewrite, summary, translation, and character styling
+- `router.py`: routing strategies, room device selection, and delivery orchestration
+- `queue.py`: deduplication, grouping, delay, summary windows, and queue state
+- `controls.py`: integration-owned runtime controls
+- `coordinator.py`: orchestration, analytics, dashboard feed, and diagnostics
+- `frontend_registry.py`: frontend resource and dashboard registration
 
-## Runtime state
+## Room audio routing
 
-Persistent state is stored with Home Assistant `Store` and tracks:
+Voice delivery discovers room-local output devices and orders them by default priority:
 
-- notifications today
-- last notification
-- recent notifications
-- flow overrides
-- snoozed flows
-- acknowledged notifications
-- mobile push clears
-- trace history
+1. `Alice`
+2. `HomePod`
+3. `TV`
 
-## Entities
+If a room has multiple device families, Herald creates `select.herald_room_<room>_audio_target`.
+The selected target is preferred first and the router then falls back to the next available target.
 
-- `sensor.herald_status`: compact runtime status (`ready`, `busy`, `quiet_hours`, `away`)
-- `sensor.herald_notifications_today`: daily delivery counter with recent notification attributes
-- `sensor.herald_last_notification`: latest delivery title plus full payload attributes
-- `sensor.herald_queue_size`: live queue depth and routing diagnostics
+## Self-actions
 
-## Action feedback loops
-
-- Mobile push actions acknowledge/snooze notifications and clear the originating push tag.
-- Telegram callbacks return localized confirmation text through `answer_callback_query`.
+Herald speaks its own control-plane changes when someone is home.
+These self-actions are voice-only and bypass normal mute and maintenance gating.

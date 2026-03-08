@@ -1,0 +1,23 @@
+site_name: Herald AI Notification Center
+site_description: Production-ready Home Assistant AI notification control plane
+site_url: https://mesteriis.github.io/ha-herald/
+repo_url: https://github.com/Mesteriis/ha-herald
+repo_name: Mesteriis/ha-herald
+nav:
+  - Overview: index.md
+  - Architecture: architecture.md
+  - System: system.md
+  - Controls: controls.md
+  - API: api.md
+  - Flows: flows.md
+  - Dashboard: dashboard.md
+  - Release: release.md
+  - Publish Checklist: publish_checklist.md
+  - HACS Migration: hacs_migration.md
+theme:
+  name: material
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true

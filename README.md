@@ -1,177 +1,83 @@
-# Herald Notification Center
+# Herald AI Notification Center
 
-`herald` is a production-oriented Home Assistant notification framework for HACS.
-It centralizes notification routing, AI rewriting, per-user language selection,
-queueing, summaries, quiet hours, presence-aware delivery, and actionable flows.
+Herald is a production-ready Home Assistant notification control plane for HACS.
+It sits between automations and users and decides how notifications should be enriched,
+routed, aggregated, spoken, and delivered.
 
-## Features
+```text
+Automation / Script -> Herald -> User / Device / Voice
+```
 
-- `herald.notify` as the central service API
-- Presence-aware routing for TTS, push, Telegram, persistent notifications, logbook, and system log
-- Flow model with `security_alerts`, `system_events`, `device_alerts`, `ai_events`, `energy_events`, `camera_alerts`, `timer_notifications`
-- Quiet hours with critical/security bypass and per-channel override policies
-- AI rewrite and summary pipeline via Ollama
-- Per-user language routing through helpers such as `input_select.herald_language_alex`
-- Queueing and summarization of simultaneous events
-- Actionable notifications with acknowledge and snooze actions for mobile and Telegram
-- Feedback loops for mobile push clears and localized Telegram callback acknowledgements
-- Diagnostics, trace snapshots, status sensor, and auto-generated dashboard YAML presets
-- Local bundled Lovelace card served by the integration itself at `/herald/herald-card.js`
-- Semantic-release automation via `release-please`
+## What Herald does
+
+- accepts semantic events through `herald.notify`
+- resolves presence, room, recipients, language, and character from Home Assistant
+- routes through push, voice, Telegram, dashboard, persistent, TV, and system channels
+- supports queueing, deduplication, delay, summaries, and runtime diagnostics
+- exposes Herald-owned runtime controls directly on the integration page
+- speaks its own control-plane actions when someone is home
+- selects the best room output device with fallback `Alice -> HomePod -> TV`
+
+## Thin request example
+
+```yaml
+service: herald.notify
+data:
+  event: washing_cycle_finished
+  message: Washer cycle completed
+  level: info
+  ai:
+    character: domovoy
+    context:
+      mode: brief
+  context:
+    appliance: washer
+  entities:
+    - sensor.washer_state
+  suppress: 120
+  group: laundry
+  immediately: false
+```
 
 ## Installation
 
 ### HACS
 
 1. Add `https://github.com/Mesteriis/ha-herald` as a custom repository of type `Integration`.
-2. Install `Herald Notification Center`.
+2. Install `Herald AI Notification Center`.
 3. Restart Home Assistant.
-4. Add the Lovelace resource `/herald/herald-card.js` as a module resource.
+4. Add the integration in Settings -> Devices & Services.
 
 ### Manual
 
 Copy this repository into `config/custom_components/herald/` and restart Home Assistant.
 
-## Minimal configuration
+## Runtime controls
 
-```yaml
-herald:
-  ollama:
-    enabled: true
-    host: http://ollama.local:11434
-    model: llama3
-  quiet_hours:
-    start: "23:00"
-    end: "08:00"
-  channels:
-    kitchen_tts:
-      type: tts
-      service: tts.yandex_station_say
-      entity_id: media_player.kitchen_homepod
-      room: kitchen
-      quiet_hours_policy: block
-    alex_phone:
-      type: mobile_app
-      service: notify.mobile_app_alex_phone
-      user: alex
-      quiet_hours_policy: allow
-    family_telegram:
-      type: telegram
-      chat_id: -1001234567890
-    persistent_default:
-      type: persistent_notification
-    system_log_default:
-      type: system_log
-  users:
-    alex:
-      name: Alex
-      language_helper: input_select.herald_language_alex
-      preferred_channels:
-        - alex_phone
-    wife:
-      name: Wife
-      language_helper: input_select.herald_language_wife
-      preferred_channels:
-        - family_telegram
-  flows:
-    security_alerts:
-      enabled: true
-      severity: security
-      channels:
-        - family_telegram
-        - kitchen_tts
-      summary_personality: Jarvis
-    energy_events:
-      enabled: true
-      severity: warning
-      channels:
-        - alex_phone
-```
+Herald creates runtime entities for:
 
-## Service API
+- AI enablement and AI per severity
+- severity enablement
+- maintenance mode and maintenance minimum level
+- mute all
+- dashboard sidebar visibility
+- channel family toggles
+- per-user language, character, and silent mode
+- per-room fallback presence and room notification output device
+- per-channel enablement, minimum level, and test buttons
+- per-flow enablement, summary window, dedup window, cooldown, and test buttons
 
-### `herald.notify`
-
-```yaml
-service: herald.notify
-data:
-  flow: timer_notifications
-  level: warning
-  title: Таймер
-  message: До выключения осталось 15 минут
-  source: automation.timer
-  automation_id: timer_kitchen_shutdown
-  room: kitchen
-  include_actions: true
-```
-
-### `herald.acknowledge`
-
-```yaml
-service: herald.acknowledge
-data:
-  notification_id: timer_notifications_20260308120000_1234abcd
-  actor: alex
-```
-
-### `herald.snooze_flow`
-
-```yaml
-service: herald.snooze_flow
-data:
-  flow: timer_notifications
-  notification_id: timer_notifications_20260308120000_1234abcd
-  minutes: 30
-  actor: alex
-```
-
-## Migration from scripts
-
-Current YAML automations that call `script.voice_notify_router` or `script.system_notify`
-should be migrated to `herald.notify`.
-
-Example:
-
-```yaml
-service: herald.notify
-data:
-  flow: device_alerts
-  level: info
-  title: Стиральная машина
-  message: Стирка закончилась
-  source: automation.washer_cycle_finished_notify
-  device: washer
-  room: bathroom
-  include_actions: true
-```
-
-## Dashboard
-
-Use `herald.generate_dashboard` to create a starter dashboard YAML file.
-
-```yaml
-service: herald.generate_dashboard
-data:
-  path: dashboards/herald_dashboard.yaml
-  title: Herald Dashboard
-  preset: rooms
-```
-
-## Development
-
-- Python: 3.11
-- Frontend: TypeScript + Lit + esbuild
-- Tests: `pytest`
-- Build frontend: `npm install && npm run build`
-- Run tests: `pytest -q`
-
-## Documentation
+## Key docs
 
 - [Architecture](docs/architecture.md)
-- [System Description](docs/system.md)
-- [Publish Checklist](docs/publish_checklist.md)
-- [HACS Migration](docs/hacs_migration.md)
-- [Flows](docs/flows.md)
+- [System](docs/system.md)
+- [Controls](docs/controls.md)
 - [API](docs/api.md)
 - [Dashboard](docs/dashboard.md)
-- [Contributing](CONTRIBUTING.md)
+- [Release](docs/release.md)
+- [HACS migration](docs/hacs_migration.md)
+- [Changelog](CHANGELOG.md)
+
+## Maintainer
+
+Aleksandr Meshchryakov <avm@sh-inc.ru>

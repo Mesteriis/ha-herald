@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import enum
 
-from homeassistant.const import Platform
-
 try:
     StrEnum = enum.StrEnum
 except AttributeError:
@@ -14,13 +12,14 @@ except AttributeError:
 
 DOMAIN = "herald"
 NAME = "Herald Notification Center"
-VERSION = "0.2.0"  # x-release-please-version
-PLATFORMS: list[Platform] = [Platform.SENSOR]
+VERSION = "0.4.0"  # x-release-please-version
+PLATFORMS: list[str] = ["sensor", "binary_sensor", "switch", "select", "number", "button"]
 
 DATA_YAML_CONFIG = "yaml_config"
 DATA_SERVICE_REGISTERED = "service_registered"
 DATA_COORDINATORS = "coordinators"
 DATA_FRONTEND_REGISTERED = "frontend_registered"
+DATA_FRONTEND_REGISTRATION = "frontend_registration"
 
 STORAGE_VERSION = 2
 STORAGE_KEY = f"{DOMAIN}.runtime"
@@ -49,10 +48,15 @@ CONF_USERS = "users"
 CONF_PERSONALITIES = "personalities"
 CONF_PERSONALITY = "personality"
 CONF_SUMMARY_PERSONALITY = "summary_personality"
+CONF_MIN_LEVEL = "min_level"
+CONF_DEDUP_WINDOW = "dedup_window_seconds"
+CONF_COOLDOWN = "cooldown_seconds"
 CONF_QUIET_HOURS = "quiet_hours"
 CONF_QUIET_HOURS_POLICY = "quiet_hours_policy"
 CONF_PRESENCE = "presence"
 CONF_ROUTER = "router"
+CONF_MAINTENANCE_MODE_ENTITY = "maintenance_mode_entity"
+CONF_MAINTENANCE_MIN_LEVEL = "maintenance_min_level"
 CONF_LANGUAGE_HELPER = "language_helper"
 CONF_ROOM = "room"
 CONF_ROOM_ENTITY = "room_entity"
@@ -93,9 +97,17 @@ DEFAULT_TRACE_LIMIT = 100
 DEFAULT_RECENT_LIMIT = 20
 DEFAULT_PERSONALITY = "HESTIA"
 DEFAULT_SNOOZE_MINUTES = 30
+DEFAULT_CHANNEL_MIN_LEVEL = "info"
+DEFAULT_FLOW_COOLDOWN_SECONDS = 0
+DEFAULT_FLOW_DEDUP_WINDOW_SECONDS = 0
+DEFAULT_MAINTENANCE_MODE_ENTITY = "input_boolean.maintenance_mode"
+DEFAULT_MAINTENANCE_MIN_LEVEL = "critical"
 FRONTEND_DIR = "frontend"
 FRONTEND_BASE_URL = "/herald"
 FRONTEND_MODULE_URL = "/herald/herald-card.js"
+FRONTEND_DASHBOARD_TITLE = "Herald Control Center"
+FRONTEND_DASHBOARD_URL_PATH = "herald-control-center"
+FRONTEND_DASHBOARD_ICON = "mdi:bell-badge"
 
 DEFAULT_ROOM_SENSORS: dict[str, str] = {
     "living_room": "binary_sensor.room_gostinaia_occupied",
@@ -138,6 +150,11 @@ REDACT_CONFIG = {
     CONF_CHAT_ID,
     CONF_THREAD_ID,
 }
+
+
+def topology_signal(entry_id: str) -> str:
+    """Return the dispatcher signal used for dynamic Herald topology updates."""
+    return f"{DOMAIN}_topology_{entry_id}"
 
 
 class Severity(StrEnum):

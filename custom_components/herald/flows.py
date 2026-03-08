@@ -88,6 +88,10 @@ def resolve_requested_flow(flows: dict[str, FlowConfig], requested_flow: str | N
     """Resolve the effective flow name for a notification."""
     if requested_flow and requested_flow in flows:
         return requested_flow
+    if requested_flow:
+        normalized = requested_flow.strip().lower().replace(" ", "_")
+        if normalized in flows:
+            return normalized
 
     if level in {"security", "critical"} and "security_alerts" in flows:
         return "security_alerts"
@@ -97,7 +101,9 @@ def resolve_requested_flow(flows: dict[str, FlowConfig], requested_flow: str | N
         return "device_alerts"
     if level in {"system"} and "system_events" in flows:
         return "system_events"
-    return requested_flow or "system_events"
+    if "system_events" in flows:
+        return "system_events"
+    return next(iter(flows), "system_events")
 
 
 def flow_defaults(flow: FlowConfig) -> dict[str, Any]:

@@ -1,69 +1,39 @@
 # API
 
-## Services
+## Primary service
 
 ### `herald.notify`
 
-Fields:
+Thin request fields:
 
-- `flow`
-- `level`
-- `title`
+- `event`
 - `message`
-- `source`
-- `automation_id`
-- `device`
-- `room`
-- `user`
-- `users`
-- `channels`
-- `personality`
-- `metadata`
-- `notification_id`
-- `include_actions`
-- `rewrite`
-- `summarize`
-- `force`
+- `level`
+- `ai`
+- `context`
+- `entities`
+- `suppress`
+- `group`
+- `immediately`
 
-### `herald.acknowledge`
+Example:
 
-Acknowledge a notification by `notification_id`.
+```yaml
+service: herald.notify
+data:
+  event: door_left_open
+  message: Balcony door has been open for 10 minutes
+  level: warning
+  entities:
+    - binary_sensor.balcony_door
+  context:
+    area: balcony
+```
 
-### `herald.snooze_flow`
+## Other services
 
-Temporarily mute a flow for `minutes`.
-
-Fields:
-
-- `flow`
-- `minutes`
-- `notification_id`
-- `actor`
-- `source`
-
-### `herald.generate_dashboard`
-
-Generate a YAML dashboard definition.
-
-Fields:
-
-- `path`
-- `title`
-- `preset` (`overview`, `rooms`, `roles`)
-
-### `herald.trace_snapshot`
-
-Return runtime traces, recent notifications, acknowledged notifications, and snoozed flows.
-
-## Events handled
-
-- `mobile_app_notification_action`
-- `mobile_app_notification_cleared`
-- `telegram_callback`
-
-## Entities
-
-- `sensor.herald_status`
-- `sensor.herald_notifications_today`
-- `sensor.herald_last_notification`
-- `sensor.herald_queue_size`
+- `herald.generate_dashboard`
+- `herald.set_flow_state`
+- `herald.trace_snapshot`
+- `herald.acknowledge`
+- `herald.snooze_flow`

@@ -22,12 +22,14 @@
     "step": {
       "init": {
         "title": "Options Herald",
-        "description": "Ajustez Ollama, les heures calmes et les personnalites de resume par flux.",
+        "description": "Ajustez Ollama, les heures calmes, la policy de maintenance, les seuils par canal et les politiques par flux.",
         "data": {
           "host": "Hôte Ollama",
           "model": "Modèle Ollama",
           "start": "Début des heures calmes",
-          "end": "Fin des heures calmes"
+          "end": "Fin des heures calmes",
+          "maintenance_mode_entity": "Entité de maintenance",
+          "maintenance_min_level": "Niveau minimum en maintenance"
         }
       }
     }
@@ -36,6 +38,10 @@
     "sensor": {
       "status": {"name": "Statut"},
       "notifications_today": {"name": "Notifications du jour"},
+      "deliveries_today": {"name": "Livrées aujourd'hui"},
+      "dropped_today": {"name": "Écartées aujourd'hui"},
+      "errors_today": {"name": "Erreurs du jour"},
+      "ai_requests_today": {"name": "Requêtes AI du jour"},
       "last_notification": {"name": "Dernière notification"},
       "queue_size": {"name": "Taille de la file"}
     }

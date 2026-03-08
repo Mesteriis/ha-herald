@@ -1,5 +1,4 @@
 # TODO
 
-- Add a fuller Home Assistant fixture harness for coordinator event bus integration tests.
-- Add optional webhook ingestion endpoints from the architecture roadmap.
-- Add analytics/history storage beyond in-memory runtime traces.
+- no open implementation gaps in the current Herald roadmap
+- remaining work is operational: live acceptance in Home Assistant, final dashboard YAML polish, and release publishing

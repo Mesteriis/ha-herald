@@ -23,6 +23,24 @@ class QueuedNotification:
     enqueued_at: datetime
     summary_window_seconds: int = DEFAULT_SUMMARY_WINDOW_SECONDS
 
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the queued notification for diagnostics and UI."""
+        return {
+            "flow": self.context.flow,
+            "event": self.context.event,
+            "title": self.context.title,
+            "message": self.context.message,
+            "level": self.context.level,
+            "notification_id": self.context.notification_id,
+            "group": self.context.group,
+            "channels": list(self.context.channels),
+            "room": self.context.room,
+            "users": list(self.context.users),
+            "timestamp": self.context.timestamp,
+            "enqueued_at": self.enqueued_at.isoformat(),
+            "summary_window_seconds": self.summary_window_seconds,
+        }
+
 
 class NotificationQueueManager:
     """Queue manager that batches events and triggers summary dispatches."""
@@ -38,6 +56,10 @@ class NotificationQueueManager:
         """Return the current queue size."""
         return len(self._items)
 
+    def _snapshot(self) -> list[dict[str, object]]:
+        """Return a serializable snapshot of the current queue."""
+        return [item.as_dict() for item in self._items]
+
     async def async_enqueue(self, item: NotificationContext, *, summary_window_seconds: int) -> None:
         """Append a notification and schedule a flush if needed."""
         async with self._lock:
@@ -48,7 +70,7 @@ class NotificationQueueManager:
                     summary_window_seconds=max(0, summary_window_seconds),
                 )
             )
-            self._coordinator.async_set_queue_size(len(self._items))
+            self._coordinator.async_set_queue_state(self._snapshot())
             if self._flush_task is None or self._flush_task.done():
                 delay = max(
                     0,
@@ -78,11 +100,14 @@ class NotificationQueueManager:
         async with self._lock:
             items = list(self._items)
             self._items.clear()
-            self._coordinator.async_set_queue_size(0)
+            self._coordinator.async_set_queue_state([])
 
         groups: dict[tuple[str, tuple[str, ...]], list[NotificationContext]] = defaultdict(list)
         for item in items:
-            group_key = (item.context.flow, tuple(sorted(item.context.channels)))
+            group_key = (
+                item.context.group or item.context.flow or item.context.event,
+                tuple(sorted(item.context.channels)),
+            )
             groups[group_key].append(item.context)
 
         for notifications in groups.values():

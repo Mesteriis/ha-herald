@@ -22,12 +22,14 @@
     "step": {
       "init": {
         "title": "Opciones de Herald",
-        "description": "Ajusta Ollama, las horas silenciosas y las personalidades de resumen por flujo.",
+        "description": "Ajusta Ollama, las horas silenciosas, la policy de mantenimiento, los umbrales por canal y las politicas por flujo.",
         "data": {
           "host": "Host de Ollama",
           "model": "Modelo de Ollama",
           "start": "Inicio de horas silenciosas",
-          "end": "Fin de horas silenciosas"
+          "end": "Fin de horas silenciosas",
+          "maintenance_mode_entity": "Entidad de mantenimiento",
+          "maintenance_min_level": "Nivel minimo en mantenimiento"
         }
       }
     }
@@ -36,8 +38,52 @@
     "sensor": {
       "status": {"name": "Estado"},
       "notifications_today": {"name": "Notificaciones de hoy"},
-      "last_notification": {"name": "Última notificación"},
-      "queue_size": {"name": "Tamaño de la cola"}
+      "deliveries_today": {"name": "Entregadas hoy"},
+      "dropped_today": {"name": "Descartadas hoy"},
+      "errors_today": {"name": "Errores de hoy"},
+      "ai_requests_today": {"name": "Solicitudes AI de hoy"},
+      "last_notification": {"name": "Ultima notificacion"},
+      "queue_size": {"name": "Tamano de la cola"}
+    },
+    "binary_sensor": {
+      "room_presence_sensor": {"name": "Presencia de Herald en la habitacion {room_name}"}
+    },
+    "switch": {
+      "ai_enabled": {"name": "AI de Herald activado"},
+      "level_info": {"name": "Nivel info de Herald"},
+      "level_warning": {"name": "Nivel warning de Herald"},
+      "level_critical": {"name": "Nivel critical de Herald"},
+      "maintenance_mode": {"name": "Modo de mantenimiento de Herald"},
+      "mute_all": {"name": "Mute all de Herald"},
+      "dashboard_sidebar": {"name": "Dashboard de Herald en la barra lateral"},
+      "ai_info": {"name": "AI de Herald para info"},
+      "ai_warning": {"name": "AI de Herald para warning"},
+      "ai_critical": {"name": "AI de Herald para critical"},
+      "channel_voice": {"name": "Canales de voz de Herald"},
+      "channel_push": {"name": "Canales push de Herald"},
+      "channel_tv": {"name": "Canales TV de Herald"},
+      "room_presence_switch": {"name": "Presencia fallback de Herald para la habitacion {room_name}"},
+      "user_silent": {"name": "Modo silencioso de Herald para {user_name}"},
+      "flow_enabled": {"name": "Flujo {flow_name} de Herald activado"},
+      "channel_enabled": {"name": "Canal {channel_name} de Herald activado"}
+    },
+    "select": {
+      "maintenance_min_level": {"name": "Nivel minimo de mantenimiento de Herald"},
+      "room_audio_target": {"name": "Dispositivo de notificacion de Herald para la habitacion {room_name}"},
+      "user_language": {"name": "Idioma de Herald para {user_name}"},
+      "user_character": {"name": "Personaje de Herald para {user_name}"},
+      "channel_min_level": {"name": "Nivel minimo del canal {channel_name} de Herald"}
+    },
+    "number": {
+      "flow_summary_window": {"name": "Ventana de resumen del flujo {flow_name} de Herald"},
+      "flow_dedup_window": {"name": "Ventana dedup del flujo {flow_name} de Herald"},
+      "flow_cooldown": {"name": "Cooldown del flujo {flow_name} de Herald"}
+    },
+    "button": {
+      "test_level_info": {"name": "Prueba de nivel info de Herald"},
+      "test_level_warning": {"name": "Prueba de nivel warning de Herald"},
+      "test_level_critical": {"name": "Prueba de nivel critical de Herald"},
+      "channel_test": {"name": "Prueba del canal {channel_name} de Herald"}
     }
   }
 }

@@ -1,15 +1,16 @@
 {
   "domain": "herald",
   "name": "Herald Notification Center",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "documentation": "https://github.com/Mesteriis/ha-herald",
   "issue_tracker": "https://github.com/Mesteriis/ha-herald/issues",
   "codeowners": ["@Mesteriis"],
   "config_flow": true,
+  "dependencies": ["frontend", "http", "lovelace"],
   "integration_type": "service",
   "iot_class": "local_push",
   "quality_scale": "silver",
-  "after_dependencies": ["http", "logbook"],
-  "requirements": [],
+  "after_dependencies": ["logbook"],
+  "requirements": ["hume==0.13.10"],
   "loggers": ["custom_components.herald"]
 }

@@ -2,4 +2,5 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 node_modules/
-dist/
+site/
+.DS_Store

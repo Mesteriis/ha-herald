@@ -24,21 +24,28 @@ from .const import (
 NOTIFY_SCHEMA = vol.Schema(
     {
         vol.Optional("entry_id"): cv.string,
-        vol.Optional("flow"): cv.string,
+        vol.Optional("event"): cv.string,
         vol.Optional("level", default="info"): vol.In(
             ["debug", "info", "notice", "warning", "critical", "security", "ai", "system"]
         ),
-        vol.Optional("title", default="Herald"): cv.string,
         vol.Required("message"): cv.string,
+        vol.Optional("ai"): vol.Any(dict, cv.string),
+        vol.Optional("context"): vol.Any(dict, cv.string),
+        vol.Optional("entities"): vol.Any([cv.string], cv.string),
+        vol.Optional("suppress"): vol.All(vol.Coerce(int), vol.Range(min=0, max=24 * 60 * 60)),
+        vol.Optional("group"): cv.string,
+        vol.Optional("immediately", default=True): cv.boolean,
+        vol.Optional("title", default="Herald"): cv.string,
+        vol.Optional("flow"): cv.string,
         vol.Optional("source", default="manual"): cv.string,
         vol.Optional("automation_id"): cv.string,
         vol.Optional("device"): cv.string,
         vol.Optional("room"): cv.string,
         vol.Optional("user"): cv.string,
-        vol.Optional("users"): [cv.string],
-        vol.Optional("channels"): [cv.string],
+        vol.Optional("users"): vol.Any([cv.string], cv.string),
+        vol.Optional("channels"): vol.Any([cv.string], cv.string),
         vol.Optional("personality"): cv.string,
-        vol.Optional("metadata"): dict,
+        vol.Optional("metadata"): vol.Any(dict, cv.string),
         vol.Optional("notification_id"): cv.string,
         vol.Optional("include_actions", default=False): cv.boolean,
         vol.Optional("rewrite", default=True): cv.boolean,
@@ -51,7 +58,7 @@ DASHBOARD_SCHEMA = vol.Schema(
     {
         vol.Optional("entry_id"): cv.string,
         vol.Optional("path", default="dashboards/herald_dashboard.yaml"): cv.string,
-        vol.Optional("title", default="Herald Dashboard"): cv.string,
+        vol.Optional("title", default="Herald Control Center"): cv.string,
         vol.Optional("preset", default=DEFAULT_DASHBOARD_PRESET): vol.In(SUPPORTED_DASHBOARD_PRESETS),
     }
 )

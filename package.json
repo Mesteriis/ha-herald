@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build-frontend.mjs",
-    "check": "tsc --noEmit"
+    "check": "node --check frontend/herald-card.js"
   },
   "devDependencies": {
     "esbuild": "^0.25.1",

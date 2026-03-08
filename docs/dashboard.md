@@ -1,43 +1,20 @@
 # Dashboard
 
-Herald serves its card locally at `/herald/herald-card.js`.
+Herald registers two frontend surfaces in storage-mode Lovelace:
 
-## Lovelace resource
+- `/herald/herald-card.js`
+- `/herald-control-center`
 
-Add a module resource:
+The generated dashboard is a starter operational layout. It is safe to replace or
+rebuild it with a custom YAML design after installation.
 
-```yaml
-url: /herald/herald-card.js
-type: module
-```
+Useful entities for custom dashboards:
 
-## Card example
-
-```yaml
-type: custom:herald-card
-title: Herald Notification Center
-today_entity: sensor.herald_notifications_today
-last_entity: sensor.herald_last_notification
-queue_entity: sensor.herald_queue_size
-language_entities:
-  - input_select.herald_language_alex
-  - input_select.herald_language_wife
-```
-
-## Auto dashboard
-
-The service `herald.generate_dashboard` writes a starter dashboard YAML file. The resulting dashboard shows:
-
-- statistics
-- queue size
-- recent notifications
-- per-flow toggles
-- language selectors
-
-## Presets
-
-Use the `preset` field to generate different starter layouts:
-
-- `overview`: single-pane operational summary
-- `rooms`: adds room occupancy tiles from configured room sensors
-- `roles`: adds per-user sections with language helpers and core Herald entities
+- `sensor.herald_notification_center_status`
+- `sensor.herald_notification_center_queue_size`
+- `sensor.herald_notification_center_last_notification`
+- `sensor.herald_notification_center_deliveries_today`
+- `switch.herald_maintenance_mode`
+- `switch.herald_mute_all`
+- `switch.herald_dashboard_sidebar`
+- `select.herald_room_<room>_audio_target`

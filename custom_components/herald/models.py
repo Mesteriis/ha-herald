@@ -12,7 +12,9 @@ from .const import (
     CONF_CHANNELS,
     CONF_CHAT_ID,
     CONF_CONDITIONS,
+    CONF_COOLDOWN,
     CONF_DATA,
+    CONF_DEDUP_WINDOW,
     CONF_ENABLED,
     CONF_END,
     CONF_ENTITY_ID,
@@ -22,6 +24,9 @@ from .const import (
     CONF_HOST,
     CONF_INCLUDE_ACTIONS,
     CONF_LANGUAGE_HELPER,
+    CONF_MAINTENANCE_MIN_LEVEL,
+    CONF_MAINTENANCE_MODE_ENTITY,
+    CONF_MIN_LEVEL,
     CONF_MINUTES,
     CONF_MODEL,
     CONF_NAME,
@@ -48,13 +53,19 @@ from .const import (
     CONF_TITLE_PREFIX,
     CONF_USER,
     CONF_USERS,
+    DEFAULT_CHANNEL_MIN_LEVEL,
+    DEFAULT_FLOW_COOLDOWN_SECONDS,
+    DEFAULT_FLOW_DEDUP_WINDOW_SECONDS,
     DEFAULT_FLOWS,
+    DEFAULT_MAINTENANCE_MIN_LEVEL,
+    DEFAULT_MAINTENANCE_MODE_ENTITY,
     DEFAULT_NAME,
     DEFAULT_OLLAMA_HOST,
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_PERSONALITIES,
     DEFAULT_QUIET_HOURS_END,
     DEFAULT_QUIET_HOURS_START,
+    DEFAULT_RECENT_LIMIT,
     DEFAULT_ROOM_SENSORS,
     DEFAULT_SNOOZE_MINUTES,
     DEFAULT_SUMMARY_WINDOW_SECONDS,
@@ -86,6 +97,7 @@ class ChannelConfig:
     user: str | None = None
     title_prefix: str | None = None
     data: dict[str, Any] = field(default_factory=dict)
+    min_level: str = DEFAULT_CHANNEL_MIN_LEVEL
     quiet_hours_policy: str = QUIET_HOURS_POLICY_DEFAULT
 
     @classmethod
@@ -104,6 +116,7 @@ class ChannelConfig:
             user=payload.get(CONF_USER),
             title_prefix=payload.get(CONF_TITLE_PREFIX),
             data=dict(payload.get(CONF_DATA, {})),
+            min_level=str(payload.get(CONF_MIN_LEVEL, DEFAULT_CHANNEL_MIN_LEVEL)),
             quiet_hours_policy=str(
                 payload.get(CONF_QUIET_HOURS_POLICY, QUIET_HOURS_POLICY_DEFAULT)
             ),
@@ -123,6 +136,8 @@ class FlowConfig:
     summary_personality: str | None = None
     allow_summary: bool = True
     summary_window_seconds: int = DEFAULT_SUMMARY_WINDOW_SECONDS
+    dedup_window_seconds: int = DEFAULT_FLOW_DEDUP_WINDOW_SECONDS
+    cooldown_seconds: int = DEFAULT_FLOW_COOLDOWN_SECONDS
 
     @classmethod
     def from_dict(cls, name: str, raw: dict[str, Any]) -> "FlowConfig":
@@ -139,6 +154,12 @@ class FlowConfig:
             allow_summary=bool(payload.get(CONF_ALLOW_SUMMARY, True)),
             summary_window_seconds=int(
                 payload.get(CONF_SUMMARY_WINDOW, DEFAULT_SUMMARY_WINDOW_SECONDS)
+            ),
+            dedup_window_seconds=int(
+                payload.get(CONF_DEDUP_WINDOW, DEFAULT_FLOW_DEDUP_WINDOW_SECONDS)
+            ),
+            cooldown_seconds=int(
+                payload.get(CONF_COOLDOWN, DEFAULT_FLOW_COOLDOWN_SECONDS)
             ),
         )
 
@@ -200,7 +221,9 @@ class HeraldConfig:
         default_factory=lambda: {
             CONF_SUMMARY_WINDOW: DEFAULT_SUMMARY_WINDOW_SECONDS,
             "trace_limit": DEFAULT_TRACE_LIMIT,
-            "recent_limit": 20,
+            "recent_limit": DEFAULT_RECENT_LIMIT,
+            CONF_MAINTENANCE_MODE_ENTITY: DEFAULT_MAINTENANCE_MODE_ENTITY,
+            CONF_MAINTENANCE_MIN_LEVEL: DEFAULT_MAINTENANCE_MIN_LEVEL,
         }
     )
 
@@ -270,7 +293,9 @@ class HeraldConfig:
         router = {
             CONF_SUMMARY_WINDOW: DEFAULT_SUMMARY_WINDOW_SECONDS,
             "trace_limit": DEFAULT_TRACE_LIMIT,
-            "recent_limit": 20,
+            "recent_limit": DEFAULT_RECENT_LIMIT,
+            CONF_MAINTENANCE_MODE_ENTITY: DEFAULT_MAINTENANCE_MODE_ENTITY,
+            CONF_MAINTENANCE_MIN_LEVEL: DEFAULT_MAINTENANCE_MIN_LEVEL,
         }
         router.update(dict(payload.get(CONF_ROUTER, {})))
 
@@ -311,6 +336,7 @@ class NotificationContext:
     level: str
     source: str
     timestamp: str
+    event: str = ""
     notification_id: str = ""
     automation_id: str | None = None
     device: str | None = None
@@ -318,8 +344,15 @@ class NotificationContext:
     user: str | None = None
     users: list[str] = field(default_factory=list)
     channels: list[str] = field(default_factory=list)
+    entities: list[str] = field(default_factory=list)
+    context_data: dict[str, Any] = field(default_factory=dict)
+    ai_context: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+    character: str | None = None
     personality: str | None = None
+    group: str | None = None
+    suppress_seconds: int | None = None
+    immediately: bool = True
     rewrite: bool = True
     summarize: bool = True
     force: bool = False
@@ -348,13 +381,26 @@ class RuntimeState:
 
     current_day: str
     notifications_today: int = 0
+    deliveries_today: int = 0
+    dropped_today: int = 0
+    errors_today: int = 0
+    ai_requests_today: int = 0
     queue_size: int = 0
+    queued_notifications: list[dict[str, Any]] = field(default_factory=list)
     last_notification: dict[str, Any] = field(default_factory=dict)
     recent_notifications: list[dict[str, Any]] = field(default_factory=list)
+    dashboard_feed: list[dict[str, Any]] = field(default_factory=list)
     flow_overrides: dict[str, bool] = field(default_factory=dict)
     snoozed_flows: dict[str, str] = field(default_factory=dict)
     acknowledged_notifications: dict[str, dict[str, Any]] = field(default_factory=dict)
+    dedup_cache: dict[str, str] = field(default_factory=dict)
+    last_flow_delivery: dict[str, str] = field(default_factory=dict)
+    channel_delivery_counts: dict[str, int] = field(default_factory=dict)
+    channel_error_counts: dict[str, int] = field(default_factory=dict)
+    drop_reasons: dict[str, int] = field(default_factory=dict)
+    ai_character_counts: dict[str, int] = field(default_factory=dict)
     traces: list[dict[str, Any]] = field(default_factory=list)
+    control_values: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "RuntimeState":
@@ -363,13 +409,26 @@ class RuntimeState:
         return cls(
             current_day=str(payload.get("current_day", "1970-01-01")),
             notifications_today=int(payload.get("notifications_today", 0)),
+            deliveries_today=int(payload.get("deliveries_today", 0)),
+            dropped_today=int(payload.get("dropped_today", 0)),
+            errors_today=int(payload.get("errors_today", 0)),
+            ai_requests_today=int(payload.get("ai_requests_today", 0)),
             queue_size=int(payload.get("queue_size", 0)),
+            queued_notifications=list(payload.get("queued_notifications", [])),
             last_notification=dict(payload.get("last_notification", {})),
             recent_notifications=list(payload.get("recent_notifications", [])),
+            dashboard_feed=list(payload.get("dashboard_feed", [])),
             flow_overrides=dict(payload.get("flow_overrides", {})),
             snoozed_flows=dict(payload.get("snoozed_flows", {})),
             acknowledged_notifications=dict(payload.get("acknowledged_notifications", {})),
+            dedup_cache=dict(payload.get("dedup_cache", {})),
+            last_flow_delivery=dict(payload.get("last_flow_delivery", {})),
+            channel_delivery_counts=dict(payload.get("channel_delivery_counts", {})),
+            channel_error_counts=dict(payload.get("channel_error_counts", {})),
+            drop_reasons=dict(payload.get("drop_reasons", {})),
+            ai_character_counts=dict(payload.get("ai_character_counts", {})),
             traces=list(payload.get("traces", [])),
+            control_values=dict(payload.get("control_values", {})),
         )
 
     def to_dict(self) -> dict[str, Any]:
