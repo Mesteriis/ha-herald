@@ -1,0 +1,88 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Herald Notification Center",
+        "description": "Create the Herald notification framework entry.",
+        "data": {
+          "name": "Name",
+          "host": "Ollama host",
+          "model": "Ollama model",
+          "start": "Quiet hours start",
+          "end": "Quiet hours end"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Only one Herald instance is supported."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Herald options",
+        "description": "Adjust Ollama, quiet hours, maintenance policy, channel thresholds, and per-flow routing policies.",
+        "data": {
+          "host": "Ollama host",
+          "model": "Ollama model",
+          "start": "Quiet hours start",
+          "end": "Quiet hours end",
+          "maintenance_mode_entity": "Maintenance mode entity",
+          "maintenance_min_level": "Maintenance minimum level"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {"name": "Status"},
+      "notifications_today": {"name": "Notifications today"},
+      "deliveries_today": {"name": "Deliveries today"},
+      "dropped_today": {"name": "Dropped today"},
+      "errors_today": {"name": "Errors today"},
+      "ai_requests_today": {"name": "AI requests today"},
+      "last_notification": {"name": "Last notification"},
+      "queue_size": {"name": "Queue size"}
+    },
+    "binary_sensor": {
+      "room_presence_sensor": {"name": "Herald room {room_name} presence"}
+    },
+    "switch": {
+      "ai_enabled": {"name": "Herald AI enabled"},
+      "level_info": {"name": "Herald level info"},
+      "level_warning": {"name": "Herald level warning"},
+      "level_critical": {"name": "Herald level critical"},
+      "maintenance_mode": {"name": "Herald maintenance mode"},
+      "mute_all": {"name": "Herald mute all"},
+      "dashboard_sidebar": {"name": "Herald dashboard in sidebar"},
+      "ai_info": {"name": "Herald AI info"},
+      "ai_warning": {"name": "Herald AI warning"},
+      "ai_critical": {"name": "Herald AI critical"},
+      "channel_voice": {"name": "Herald channel voice"},
+      "channel_push": {"name": "Herald channel push"},
+      "channel_tv": {"name": "Herald channel TV"},
+      "room_presence_switch": {"name": "Herald room {room_name} fallback presence"},
+      "user_silent": {"name": "Herald user {user_name} silent"},
+      "flow_enabled": {"name": "Herald flow {flow_name} enabled"},
+      "channel_enabled": {"name": "Herald channel {channel_name} enabled"}
+    },
+    "select": {
+      "maintenance_min_level": {"name": "Herald maintenance minimum level"},
+      "room_audio_target": {"name": "Herald room {room_name} notification device"},
+      "user_language": {"name": "Herald user {user_name} language"},
+      "user_character": {"name": "Herald user {user_name} character"},
+      "channel_min_level": {"name": "Herald channel {channel_name} minimum level"}
+    },
+    "number": {
+      "flow_summary_window": {"name": "Herald flow {flow_name} summary window"},
+      "flow_dedup_window": {"name": "Herald flow {flow_name} dedup window"},
+      "flow_cooldown": {"name": "Herald flow {flow_name} cooldown"}
+    },
+    "button": {
+      "test_level_info": {"name": "Herald test level info"},
+      "test_level_warning": {"name": "Herald test level warning"},
+      "test_level_critical": {"name": "Herald test level critical"},
+      "channel_test": {"name": "Herald test channel {channel_name}"}
+    }
+  }
+}

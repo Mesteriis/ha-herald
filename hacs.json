@@ -1,0 +1,7 @@
+{
+  "name": "Herald AI Notification Center",
+  "homeassistant": "2026.3.0",
+  "render_readme": true,
+  "zip_release": false,
+  "domains": ["herald"]
+}

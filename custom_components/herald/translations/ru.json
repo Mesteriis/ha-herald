@@ -1,0 +1,89 @@
+{
+  "title": "Herald Notification Center",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Herald Notification Center",
+        "description": "Создайте запись Herald Notification Framework.",
+        "data": {
+          "name": "Имя",
+          "host": "Хост Ollama",
+          "model": "Модель Ollama",
+          "start": "Начало тихих часов",
+          "end": "Конец тихих часов"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Поддерживается только один экземпляр Herald."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Параметры Herald",
+        "description": "Настройте Ollama, тихие часы, maintenance policy, пороги каналов и per-flow routing policy.",
+        "data": {
+          "host": "Хост Ollama",
+          "model": "Модель Ollama",
+          "start": "Начало тихих часов",
+          "end": "Конец тихих часов",
+          "maintenance_mode_entity": "Сущность режима обслуживания",
+          "maintenance_min_level": "Минимальный уровень в обслуживании"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {"name": "Статус"},
+      "notifications_today": {"name": "Уведомлений сегодня"},
+      "deliveries_today": {"name": "Доставлено сегодня"},
+      "dropped_today": {"name": "Отброшено сегодня"},
+      "errors_today": {"name": "Ошибок сегодня"},
+      "ai_requests_today": {"name": "AI-запросов сегодня"},
+      "last_notification": {"name": "Последнее уведомление"},
+      "queue_size": {"name": "Размер очереди"}
+    },
+    "binary_sensor": {
+      "room_presence_sensor": {"name": "Присутствие Herald в комнате {room_name}"}
+    },
+    "switch": {
+      "ai_enabled": {"name": "Herald AI включен"},
+      "level_info": {"name": "Herald уровень info"},
+      "level_warning": {"name": "Herald уровень warning"},
+      "level_critical": {"name": "Herald уровень critical"},
+      "maintenance_mode": {"name": "Herald режим обслуживания"},
+      "mute_all": {"name": "Herald mute all"},
+      "dashboard_sidebar": {"name": "Herald dashboard в боковой панели"},
+      "ai_info": {"name": "Herald AI для info"},
+      "ai_warning": {"name": "Herald AI для warning"},
+      "ai_critical": {"name": "Herald AI для critical"},
+      "channel_voice": {"name": "Herald голосовые каналы"},
+      "channel_push": {"name": "Herald push-каналы"},
+      "channel_tv": {"name": "Herald TV-каналы"},
+      "room_presence_switch": {"name": "Herald fallback-присутствие комнаты {room_name}"},
+      "user_silent": {"name": "Herald тихий режим пользователя {user_name}"},
+      "flow_enabled": {"name": "Herald поток {flow_name} включен"},
+      "channel_enabled": {"name": "Herald канал {channel_name} включен"}
+    },
+    "select": {
+      "maintenance_min_level": {"name": "Herald минимальный уровень обслуживания"},
+      "room_audio_target": {"name": "Herald устройство уведомлений для комнаты {room_name}"},
+      "user_language": {"name": "Herald язык пользователя {user_name}"},
+      "user_character": {"name": "Herald персонаж пользователя {user_name}"},
+      "channel_min_level": {"name": "Herald минимальный уровень канала {channel_name}"}
+    },
+    "number": {
+      "flow_summary_window": {"name": "Herald окно summary потока {flow_name}"},
+      "flow_dedup_window": {"name": "Herald окно dedup потока {flow_name}"},
+      "flow_cooldown": {"name": "Herald cooldown потока {flow_name}"}
+    },
+    "button": {
+      "test_level_info": {"name": "Herald тест уровня info"},
+      "test_level_warning": {"name": "Herald тест уровня warning"},
+      "test_level_critical": {"name": "Herald тест уровня critical"},
+      "channel_test": {"name": "Herald тест канала {channel_name}"}
+    }
+  }
+}

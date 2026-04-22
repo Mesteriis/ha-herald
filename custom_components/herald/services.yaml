@@ -1,0 +1,404 @@
+notify:
+  name: Notify
+  description: Publish a thin event request into the Herald AI Notification Center pipeline.
+  fields:
+    event:
+      name: Event
+      description: Semantic event name from the automation layer.
+      example: washing_cycle_finished
+      selector:
+        text: {}
+    level:
+      name: Level
+      description: Severity level.
+      example: warning
+      selector:
+        select:
+          options:
+            - debug
+            - info
+            - notice
+            - warning
+            - critical
+            - security
+            - ai
+            - system
+    message:
+      name: Message
+      required: true
+      selector:
+        text:
+          multiline: true
+    ai:
+      name: AI
+      description: Optional AI payload with character and extra context.
+      selector:
+        object: {}
+    context:
+      name: Context
+      description: Arbitrary semantic context from the automation layer.
+      selector:
+        object: {}
+    tts_options:
+      name: TTS options
+      description: Optional TTS payload overrides such as pitch, rate, and volume.
+      selector:
+        object: {}
+    mobile_options:
+      name: Mobile options
+      description: Optional mobile_app overrides such as tag, iOS interruption level, sound, Android priority, sticky mode, channel, icon, and color.
+      selector:
+        object: {}
+    mobile_zone:
+      name: Mobile zone
+      description: Optional Home Assistant zone filter for mobile_app channels. Accepts values such as `zone.home`, `home`, or any custom zone name/entity.
+      selector:
+        text: {}
+    send_voice:
+      name: Legacy send voice
+      description: Backward-compatible flag from old notify scripts.
+      selector:
+        boolean: {}
+    send_text:
+      name: Legacy send text
+      description: Backward-compatible flag from old notify scripts.
+      selector:
+        boolean: {}
+    send_mobile:
+      name: Legacy send mobile
+      description: Backward-compatible flag from old notify scripts.
+      selector:
+        boolean: {}
+    send_telegram:
+      name: Legacy send telegram
+      description: Backward-compatible flag from old notify scripts.
+      selector:
+        boolean: {}
+    target_group:
+      name: Legacy target group
+      description: Backward-compatible voice target group hint.
+      selector:
+        text: {}
+    target:
+      name: Legacy target
+      description: Backward-compatible target payload from old notify scripts.
+      selector:
+        object: {}
+    timestamp_policy:
+      name: Legacy timestamp policy
+      description: Backward-compatible timestamp policy metadata.
+      selector:
+        text: {}
+    already_humanized:
+      name: Legacy already humanized
+      description: Backward-compatible flag to skip message rewriting.
+      selector:
+        boolean: {}
+    entities:
+      name: Entities
+      description: Related Home Assistant entities for enrichment and diagnostics.
+      selector:
+        object: {}
+    suppress:
+      name: Suppress
+      description: Optional deduplication window in seconds for this request.
+      selector:
+        number:
+          min: 0
+          max: 86400
+          mode: box
+    group:
+      name: Group
+      description: Optional aggregation group for queue batching and summaries.
+      selector:
+        text: {}
+    immediately:
+      name: Immediately
+      description: Deliver immediately or allow queued aggregation.
+      selector:
+        boolean: {}
+    metadata:
+      name: Legacy metadata
+      description: Backward-compatible metadata for migration from old scripts.
+      selector:
+        object: {}
+    notification_id:
+      name: Notification ID
+      description: Optional external notification id. If omitted Herald will generate one.
+      selector:
+        text: {}
+    title:
+      name: Title
+      description: Optional delivery title. Also used as a legacy event fallback.
+      selector:
+        text: {}
+    flow:
+      name: Flow
+      description: Optional Herald flow override.
+      selector:
+        text: {}
+    room:
+      name: Room
+      description: Optional room hint for local delivery.
+      selector:
+        text: {}
+    device:
+      name: Device
+      description: Optional explicit device or entity target hint.
+      selector:
+        text: {}
+    user:
+      name: User
+      description: Optional primary user slug or `person.*` entity for routing.
+      selector:
+        text: {}
+    users:
+      name: Users
+      description: Optional audience list of user slugs or `person.*` entities.
+      selector:
+        object: {}
+    channels:
+      name: Channels
+      description: Optional explicit Herald channels list.
+      selector:
+        object: {}
+    include_actions:
+      name: Include actions
+      description: Add acknowledge and snooze actions for supported channels.
+      selector:
+        boolean: {}
+    rewrite:
+      name: Rewrite
+      description: Allow Herald AI rewriting before delivery.
+      selector:
+        boolean: {}
+    summarize:
+      name: Summarize
+      description: Allow Herald queue aggregation and summary behavior.
+      selector:
+        boolean: {}
+    force:
+      name: Force
+      description: Ignore normal level and mute checks for this request.
+      selector:
+        boolean: {}
+generate_dashboard:
+  name: Generate dashboard
+  description: Generate a YAML Lovelace dashboard for Herald.
+  fields:
+    path:
+      name: Path
+      example: dashboards/herald_dashboard.yaml
+      selector:
+        text: {}
+    title:
+      name: Title
+      example: Herald Control Center
+      selector:
+        text: {}
+    preset:
+      name: Preset
+      description: Dashboard layout preset.
+      selector:
+        select:
+          options:
+            - overview
+            - rooms
+            - roles
+route_preview:
+  name: Route preview
+  description: Explain which room, channels, and targets Herald would choose without sending the notification.
+  fields:
+    event:
+      name: Event
+      selector:
+        text: {}
+    level:
+      name: Level
+      selector:
+        select:
+          options:
+            - debug
+            - info
+            - notice
+            - warning
+            - critical
+            - security
+            - ai
+            - system
+    message:
+      name: Message
+      required: true
+      selector:
+        text:
+          multiline: true
+    room:
+      name: Room
+      selector:
+        text: {}
+    device:
+      name: Device
+      selector:
+        text: {}
+    user:
+      name: User
+      selector:
+        text: {}
+    users:
+      name: Users
+      selector:
+        object: {}
+    channels:
+      name: Channels
+      selector:
+        object: {}
+    context:
+      name: Context
+      selector:
+        object: {}
+    mobile_options:
+      name: Mobile options
+      description: Preview mobile_app payload overrides such as tag, interruption level, priority, sticky, channel, icon, and color.
+      selector:
+        object: {}
+    mobile_zone:
+      name: Mobile zone
+      description: Optional Home Assistant zone filter for mobile_app channels during preview.
+      selector:
+        text: {}
+    force:
+      name: Force
+      description: Ignore normal flow and mute checks when previewing.
+      selector:
+        boolean: {}
+set_flow_state:
+  name: Set flow state
+  description: Enable or disable a flow at runtime.
+  fields:
+    flow:
+      name: Flow
+      required: true
+      selector:
+        text: {}
+    enabled:
+      name: Enabled
+      required: true
+      selector:
+        boolean: {}
+trace_snapshot:
+  name: Trace snapshot
+  description: Return recent Herald traces and deliveries.
+acknowledge:
+  name: Acknowledge
+  description: Mark one Herald notification as acknowledged.
+  fields:
+    notification_id:
+      name: Notification ID
+      required: true
+      selector:
+        text: {}
+    actor:
+      name: Actor
+      description: Optional human-readable actor name.
+      selector:
+        text: {}
+snooze_flow:
+  name: Snooze flow
+  description: Temporarily mute one Herald flow for a number of minutes.
+  fields:
+    flow:
+      name: Flow
+      required: true
+      selector:
+        text: {}
+    minutes:
+      name: Minutes
+      selector:
+        number:
+          min: 1
+          max: 1440
+          mode: box
+    notification_id:
+      name: Notification ID
+      description: Optional notification id used to clear related push artifacts.
+      selector:
+        text: {}
+    actor:
+      name: Actor
+      description: Optional human-readable actor name.
+      selector:
+        text: {}
+refresh_notification_registry:
+  name: Refresh notification registry
+  description: Rescan active config and rebuild Herald notification governance registry.
+  fields:
+    force:
+      name: Force
+      selector:
+        boolean: {}
+get_notification_registry:
+  name: Get notification registry
+  description: Return derived notification registry together with effective policy state.
+get_notification_policy:
+  name: Get notification policy
+  description: Return one merged policy object for a concrete notification key.
+  fields:
+    notification_key:
+      name: Notification key
+      required: true
+      selector:
+        text: {}
+set_notification_policy:
+  name: Set notification policy
+  description: Create or update one structured notification policy override.
+  fields:
+    notification_key:
+      name: Notification key
+      required: true
+      selector:
+        text: {}
+    enabled:
+      name: Enabled
+      selector:
+        boolean: {}
+    delivery_mode:
+      name: Delivery mode
+      selector:
+        select:
+          options:
+            - inherit
+            - disabled
+            - text_only
+            - voice_only
+            - push_only
+            - custom
+    channels:
+      name: Channels
+      description: Explicit channels for custom mode.
+      selector:
+        object: {}
+    level_override:
+      name: Level override
+      selector:
+        text: {}
+    cooldown_override:
+      name: Cooldown override
+      selector:
+        number:
+          min: 0
+          max: 86400
+          mode: box
+    notes:
+      name: Notes
+      selector:
+        text:
+          multiline: true
+reset_notification_policy:
+  name: Reset notification policy
+  description: Remove user override and restore inherited routing behavior.
+  fields:
+    notification_key:
+      name: Notification key
+      required: true
+      selector:
+        text: {}

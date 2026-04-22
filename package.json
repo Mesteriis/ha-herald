@@ -1,0 +1,14 @@
+{
+  "name": "ha-herald",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-frontend.mjs",
+    "check": "node --check frontend/herald-card.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.1",
+    "lit": "^3.2.1",
+    "typescript": "^5.8.2"
+  }
+}
