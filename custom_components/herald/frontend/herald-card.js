@@ -3168,7 +3168,7 @@ var HeraldDashboard = class extends HeraldCard {
     const date = this._now.toLocaleDateString("ru", { weekday: "short", day: "numeric", month: "long" });
     const clock = this._now.toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit" });
     const homePath = /^\/(?!\/)[^\s]*$/.test(this._config.home_path ?? "") ? this._config.home_path : "/";
-    return b2`<main class="dashboard">
+    return b2`<main class="dashboard" style=${this._config.fullscreen === true ? "--header-height: 0px" : ""}>
       <header class="dashboard-header"><div class="brand">${this._icon("mdi:bell-badge-outline")}<strong>Herald</strong></div>
         <a class="home-link" href=${homePath}>Главная дома</a><div class="date">${this._icon("mdi:calendar-blank-outline")}<span>${date}</span>${this._icon("mdi:clock-outline")}<time>${clock}</time></div>
       </header>

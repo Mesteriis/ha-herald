@@ -13,7 +13,7 @@ except AttributeError:
 
 DOMAIN = "herald"
 NAME = "Центр уведомлений Herald"
-VERSION = "0.5.0"  # x-release-please-version
+VERSION = "0.5.1"  # x-release-please-version
 PLATFORMS: list[str] = ["sensor", "binary_sensor", "switch", "select", "number", "button"]
 
 DATA_YAML_CONFIG = "yaml_config"

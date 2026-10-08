@@ -1,7 +1,7 @@
 {
   "domain": "herald",
   "name": "Herald Notification Center",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "documentation": "https://github.com/Mesteriis/ha-herald",
   "issue_tracker": "https://github.com/Mesteriis/ha-herald/issues",
   "codeowners": [

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1 (2026-10-08)
+
+- Add explicit fullscreen sizing for dashboards with a hidden Home Assistant header.
+
 ## 0.5.0 - 2026-10-08
 
 - added the Herald dashboard with six horizontal tabs, bundled Gothic artwork, live events and delivery details
