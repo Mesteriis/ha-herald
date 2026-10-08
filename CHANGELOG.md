@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.0](https://github.com/Mesteriis/ha-herald/compare/v0.5.1...v0.6.0) (2026-10-08)
+
+
+### Features
+
+* add full Herald dashboard and preserve current runtime features ([0140adf](https://github.com/Mesteriis/ha-herald/commit/0140adfa2c70c0ef6dc12f5ebf3237d114d483a2))
+
+
+### Bug Fixes
+
+* fill viewport when the surrounding HA header is hidden ([#3](https://github.com/Mesteriis/ha-herald/issues/3)) ([174ef9b](https://github.com/Mesteriis/ha-herald/commit/174ef9b3a50beb16a3ba4363ebd28fa50cd13674))
+* grant tagged release job permission to publish artifacts ([#2](https://github.com/Mesteriis/ha-herald/issues/2)) ([245e7dd](https://github.com/Mesteriis/ha-herald/commit/245e7ddaf94232028014d67a6638f605cba0f27e))
+
 ## 0.5.1 (2026-10-08)
 
 - Add explicit fullscreen sizing for dashboards with a hidden Home Assistant header.
