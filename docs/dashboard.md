@@ -33,6 +33,9 @@ views:
 ```
 
 `home_path` is optional and defaults to `/`; only a local absolute path is accepted.
+Set `fullscreen: true` when the surrounding HA header is hidden (for example by
+kiosk mode). This uses the full viewport height instead of reserving the normal
+HA header space; it does not change the user's HA navigation preferences.
 The inherited `status_entity`, `today_entity`, `queue_entity` and `entry_id` options
 can scope the dashboard to a particular Herald entry or renamed sensor. Controls
 use exact IDs resolved from the entity registry and stay disabled until HA reports
