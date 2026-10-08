@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0 - 2026-10-08
+
+- added the Herald dashboard with six horizontal tabs, bundled Gothic artwork, live events and delivery details
+- connected quick settings and numeric controls to exact HA entity identities, including renames and state acknowledgement
+- preserved rule drafts on HA updates and opened the matching rule from an event
+- added the `dashboard` generation preset while preserving existing layouts and legacy presets
+- included the installed runtime improvements for policy previews, channel configuration checks, recipient and room routing, and lifecycle validation
+- validated the built frontend, standalone tests and pinned real Home Assistant API smoke suite
+
 ## 0.4.0 - 2026-03-08
 
 - upgraded Herald to the AI Notification Center architecture with the thin `herald.notify` contract

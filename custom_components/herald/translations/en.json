@@ -1,10 +1,13 @@
 {
   "title": "Herald Notification Center",
   "config": {
+    "error": {
+      "invalid_time": "Enter a valid time in HH:MM format (00:00–23:59)."
+    },
     "step": {
       "user": {
         "title": "Herald Notification Center",
-        "description": "Create the Herald notification framework entry.",
+        "description": "Configure Herald notification routing and optional text generation.",
         "data": {
           "name": "Name",
           "host": "Ollama host",
@@ -15,75 +18,281 @@
       }
     },
     "abort": {
+      "invalid_quiet_hours": "Enter a valid time in HH:MM format (00:00–23:59).",
       "single_instance_allowed": "Only one Herald instance is supported."
     }
   },
   "options": {
+    "error": {
+      "invalid_time": "Enter a valid time in HH:MM format (00:00–23:59).",
+      "invalid_selection": "Select an available item from the list.",
+      "invalid_value": "Check the format and allowed values for this field.",
+      "invalid_host": "For OpenAI-compatible APIs, use an HTTPS base URL, optionally ending in /v1."
+    },
     "step": {
       "init": {
-        "title": "Herald options",
-        "description": "Adjust Ollama, quiet hours, maintenance policy, channel thresholds, and per-flow routing policies.",
+        "title": "Herald settings",
+        "description": "Choose a section. Saving closes this dialog and changes only the fields you edited; other settings are preserved.",
+        "menu_options": {
+          "quiet_hours": "Quiet hours",
+          "ai": "Text generation",
+          "maintenance": "Maintenance mode",
+          "channel_select": "Delivery channels",
+          "flow_select": "Notification flows"
+        }
+      },
+      "quiet_hours": {
+        "title": "Quiet hours",
+        "description": "Set the quiet-hours interval in Home Assistant local time. Channel settings and notification rules determine which deliveries are allowed.",
         "data": {
-          "host": "Ollama host",
-          "model": "Ollama model",
           "start": "Quiet hours start",
-          "end": "Quiet hours end",
-          "maintenance_mode_entity": "Maintenance mode entity",
-          "maintenance_min_level": "Maintenance minimum level"
+          "end": "Quiet hours end"
+        },
+        "data_description": {
+          "start": "Use HH:MM, from 00:00 to 23:59. An interval can cross midnight.",
+          "end": "Use HH:MM, from 00:00 to 23:59. An interval can cross midnight."
+        }
+      },
+      "ai": {
+        "title": "Text generation",
+        "description": "Choose Ollama or an OpenAI-compatible API. Saving settings does not enable AI or test the connection. Use the Herald AI switch separately. The API key is never shown again; leave it blank to keep the stored key.",
+        "data": {
+          "provider": "Provider",
+          "host": "Server URL",
+          "model": "Model ID",
+          "api_key": "API key (leave blank to keep)"
+        }
+      },
+      "maintenance": {
+        "title": "Maintenance mode",
+        "description": "Choose an optional external entity for maintenance mode. Maintenance is active when this entity or the Herald maintenance switch is on.",
+        "data": {
+          "maintenance_mode_entity": "External maintenance entity"
+        },
+        "data_description": {
+          "maintenance_mode_entity": "Entity ID whose on state activates maintenance. Leave empty to remove this external link; the Herald maintenance switch remains available."
+        }
+      },
+      "channel_select": {
+        "title": "Delivery channels",
+        "description": "Choose one existing channel to edit. Creating channels or configuring provider credentials is not available here.",
+        "data": {
+          "channel": "Channel"
+        }
+      },
+      "channel": {
+        "title": "Channel: {channel_name}",
+        "description": "Change the settings for this channel only. Enabled means the channel may be used; it does not confirm delivery.",
+        "data": {
+          "enabled": "Channel enabled",
+          "min_level": "Minimum severity"
+        },
+        "data_description": {
+          "enabled": "A disabled channel is excluded from ordinary delivery. An explicit authorized channel test can bypass this setting. Global restrictions and notification rules still apply.",
+          "min_level": "Ordinary notifications below this threshold are skipped. An explicit authorized channel test can bypass the channel threshold; other restrictions still apply."
+        }
+      },
+      "flow_select": {
+        "title": "Notification flows",
+        "description": "Choose one existing notification flow to edit its repeat limits and summary persona.",
+        "data": {
+          "flow": "Notification flow"
+        }
+      },
+      "flow": {
+        "title": "Flow: {flow_name}",
+        "description": "Set defaults for this flow. A notification rule can override its cooldown, and a request can override duplicate suppression. Saving does not enable summaries.",
+        "data": {
+          "summary_personality": "Summary persona",
+          "cooldown_seconds": "Delivery cooldown, seconds",
+          "dedup_window_seconds": "Duplicate suppression, seconds"
+        },
+        "data_description": {
+          "summary_personality": "An empty value removes the summary override. The request persona, flow persona or default persona is then used.",
+          "cooldown_seconds": "Skip notifications during this interval after the last delivery in the flow. 0 disables this limit. Notifications are not deferred.",
+          "dedup_window_seconds": "Skip matching repeated events within this window. 0 disables this filter. Notifications are not deferred."
         }
       }
+    },
+    "abort": {
+      "no_channels": "No channels are available to edit. Check the channel configuration in Herald.",
+      "no_flows": "No notification flows are available to edit.",
+      "channel_unavailable": "This channel is no longer available. Reopen settings and choose an available channel.",
+      "flow_unavailable": "This flow is no longer available. Reopen settings and choose an available flow."
     }
   },
   "entity": {
     "sensor": {
-      "status": {"name": "Status"},
-      "notifications_today": {"name": "Notifications today"},
-      "deliveries_today": {"name": "Deliveries today"},
-      "dropped_today": {"name": "Dropped today"},
-      "errors_today": {"name": "Errors today"},
-      "ai_requests_today": {"name": "AI requests today"},
-      "last_notification": {"name": "Last notification"},
-      "queue_size": {"name": "Queue size"}
+      "status": {
+        "name": "Status"
+      },
+      "notifications_today": {
+        "name": "Notifications today"
+      },
+      "deliveries_today": {
+        "name": "Deliveries today"
+      },
+      "dropped_today": {
+        "name": "Dropped today"
+      },
+      "errors_today": {
+        "name": "Errors today"
+      },
+      "ai_requests_today": {
+        "name": "AI requests today"
+      },
+      "last_notification": {
+        "name": "Last notification"
+      },
+      "queue_size": {
+        "name": "Queue size"
+      }
     },
     "binary_sensor": {
-      "room_presence_sensor": {"name": "Herald room {room_name} presence"}
+      "room_presence_sensor": {
+        "name": "Herald room {room_name} presence"
+      }
     },
     "switch": {
-      "ai_enabled": {"name": "Herald AI enabled"},
-      "level_info": {"name": "Herald level info"},
-      "level_warning": {"name": "Herald level warning"},
-      "level_critical": {"name": "Herald level critical"},
-      "maintenance_mode": {"name": "Herald maintenance mode"},
-      "mute_all": {"name": "Herald mute all"},
-      "dashboard_sidebar": {"name": "Herald dashboard in sidebar"},
-      "ai_info": {"name": "Herald AI info"},
-      "ai_warning": {"name": "Herald AI warning"},
-      "ai_critical": {"name": "Herald AI critical"},
-      "channel_voice": {"name": "Herald channel voice"},
-      "channel_push": {"name": "Herald channel push"},
-      "channel_tv": {"name": "Herald channel TV"},
-      "room_presence_switch": {"name": "Herald room {room_name} fallback presence"},
-      "user_silent": {"name": "Herald user {user_name} silent"},
-      "flow_enabled": {"name": "Herald flow {flow_name} enabled"},
-      "channel_enabled": {"name": "Herald channel {channel_name} enabled"}
+      "ai_enabled": {
+        "name": "Herald AI enabled"
+      },
+      "level_info": {
+        "name": "Herald level info"
+      },
+      "level_warning": {
+        "name": "Herald level warning"
+      },
+      "level_critical": {
+        "name": "Herald level critical"
+      },
+      "maintenance_mode": {
+        "name": "Herald maintenance mode"
+      },
+      "mute_all": {
+        "name": "Herald mute all"
+      },
+      "dashboard_sidebar": {
+        "name": "Herald dashboard in sidebar"
+      },
+      "ai_info": {
+        "name": "Herald AI info"
+      },
+      "ai_warning": {
+        "name": "Herald AI warning"
+      },
+      "ai_critical": {
+        "name": "Herald AI critical"
+      },
+      "channel_voice": {
+        "name": "Herald channel voice"
+      },
+      "channel_push": {
+        "name": "Herald channel push"
+      },
+      "channel_tv": {
+        "name": "Herald channel TV"
+      },
+      "room_presence_switch": {
+        "name": "Herald room {room_name} fallback presence"
+      },
+      "user_silent": {
+        "name": "Herald user {user_name} silent"
+      },
+      "flow_enabled": {
+        "name": "Herald flow {flow_name} enabled"
+      },
+      "channel_enabled": {
+        "name": "Herald channel {channel_name} enabled"
+      }
     },
     "select": {
-      "maintenance_min_level": {"name": "Herald maintenance minimum level"},
-      "room_audio_target": {"name": "Herald room {room_name} notification device"},
-      "user_language": {"name": "Herald user {user_name} language"},
-      "user_character": {"name": "Herald user {user_name} character"},
-      "channel_min_level": {"name": "Herald channel {channel_name} minimum level"}
+      "maintenance_min_level": {
+        "name": "Herald maintenance minimum level"
+      },
+      "room_audio_target": {
+        "name": "Herald room {room_name} notification device"
+      },
+      "user_language": {
+        "name": "Herald user {user_name} language"
+      },
+      "user_character": {
+        "name": "Herald user {user_name} character"
+      },
+      "channel_min_level": {
+        "name": "Herald channel {channel_name} minimum level"
+      }
     },
     "number": {
-      "flow_summary_window": {"name": "Herald flow {flow_name} summary window"},
-      "flow_dedup_window": {"name": "Herald flow {flow_name} dedup window"},
-      "flow_cooldown": {"name": "Herald flow {flow_name} cooldown"}
+      "flow_summary_window": {
+        "name": "Herald flow {flow_name} summary window"
+      },
+      "flow_dedup_window": {
+        "name": "Herald flow {flow_name} dedup window"
+      },
+      "flow_cooldown": {
+        "name": "Herald flow {flow_name} cooldown"
+      }
     },
     "button": {
-      "test_level_info": {"name": "Herald test level info"},
-      "test_level_warning": {"name": "Herald test level warning"},
-      "test_level_critical": {"name": "Herald test level critical"},
-      "channel_test": {"name": "Herald test channel {channel_name}"}
+      "test_level_info": {
+        "name": "Herald test level info"
+      },
+      "test_level_warning": {
+        "name": "Herald test level warning"
+      },
+      "test_level_critical": {
+        "name": "Herald test level critical"
+      },
+      "channel_test": {
+        "name": "Herald test channel {channel_name}"
+      }
+    }
+  },
+  "services": {
+    "preview_notification_policy": {
+      "name": "Preview notification rule",
+      "description": "Preview a draft without saving or sending. Scenarios change routing context; real states and time remain current.",
+      "fields": {
+        "notification_key": {
+          "name": "Notification key"
+        },
+        "policy": {
+          "name": "Unsaved rule"
+        },
+        "scenario": {
+          "name": "Scenario"
+        },
+        "message": {
+          "name": "Example message"
+        }
+      }
+    },
+    "set_notification_policy": {
+      "name": "Set notification rule",
+      "description": "Update selected fields of a notification rule. Omitted fields retain their saved values.",
+      "fields": {
+        "users": {
+          "name": "Personal message recipients",
+          "description": "Person IDs; null inherits, an empty list blocks all delivery. Common channels and room audio remain shared."
+        },
+        "target_room": {
+          "name": "Room for voice and TV",
+          "description": "Known room name; null inherits. No fallback to another room."
+        },
+        "presence": {
+          "name": "Presence condition",
+          "description": "Always, only when someone is home, or only when nobody is home."
+        },
+        "quiet_hours": {
+          "name": "During quiet hours",
+          "description": "Inherit common restrictions, keep eligible text channels, or skip. Does not defer delivery."
+        }
+      }
+    },
+    "configuration_check": {
+      "name": "Check notification configuration",
+      "description": "Inspect local channel settings, services, entities and restrictions without sending, changing settings or invoking AI. Provider credentials and connectivity are not tested."
     }
   }
 }

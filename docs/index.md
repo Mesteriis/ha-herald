@@ -1,19 +1,14 @@
 # Herald AI Notification Center
 
-Herald is a Home Assistant notification control plane that sits between automations and users.
-Automations publish semantic events. Herald decides who should get them, through which channel,
-when they should be delivered, whether AI should rewrite them, and which room device should speak them.
+Herald routes Home Assistant notifications using configurable channels, people,
+rooms, policies and runtime controls. It supports in-memory batching, optional
+Ollama rewriting/summaries, character templates and a Lit dashboard.
 
-## Core highlights
+Start with [architecture](architecture.md), [services](api.md), [controls](controls.md)
+and [dashboard](dashboard.md). The repository README describes installation.
+See [AI characters and rewriting](characters.md) for Domovoy's voice, template updates,
+and the controls required to enable paraphrasing.
 
-- thin semantic request contract through `herald.notify`
-- per-user and per-room context enrichment from live Home Assistant state
-- AI characters from `/config/herald/<character>/`
-- queueing, deduplication, delay, and summaries
-- room audio device fallback `Alice -> HomePod -> TV`
-- Herald-owned runtime controls and diagnostics
-- storage-mode dashboard registration and GitHub Pages documentation
-
-## Maintainer
-
-Aleksandr Meshchryakov <avm@sh-inc.ru>
+Local tests exercise synthetic HA interfaces and frontend templates. A successful
+local run is not live acceptance on your Home Assistant instance. Verify the
+configured transports and dashboard before relying on them for alerts.

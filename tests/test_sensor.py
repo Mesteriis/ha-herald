@@ -15,8 +15,8 @@ class _FakeRegistry:
         self.updated: list[tuple[str, str]] = []
 
     def async_get_entity_id(self, domain: str, platform: str, unique_id: str) -> str | None:
-        assert domain == "herald"
-        assert platform == "sensor"
+        assert domain == "sensor"
+        assert platform == "herald"
         return self.mapping.get(unique_id)
 
     def async_update_entity(self, entity_id: str, *, new_entity_id: str) -> None:

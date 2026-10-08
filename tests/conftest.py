@@ -3,23 +3,65 @@
 from __future__ import annotations
 
 import enum
+import re
 import sys
 import types
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+import voluptuous as vol
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+class _FlowHandler:
+    hass = None
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__()
+
+    def async_show_form(self, **kwargs):
+        return {"type": "form", **kwargs}
+
+    def async_show_menu(self, **kwargs):
+        return {"type": "menu", **kwargs}
+
+    def async_create_entry(self, **kwargs):
+        return {"type": "create_entry", **kwargs}
+
+    def async_abort(self, **kwargs):
+        return {"type": "abort", **kwargs}
+
+    def _async_current_entries(self):
+        return list(getattr(self, "_current_entries", []))
+
+
+def _redact_data(value, keys):
+    if isinstance(value, dict):
+        return {key: "**REDACTED**" if key in keys else _redact_data(item, keys) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_data(item, keys) for item in value]
+    return value
+
 
 homeassistant = types.ModuleType("homeassistant")
 config_entries = types.ModuleType("homeassistant.config_entries")
 config_entries.SOURCE_IMPORT = "import"
 config_entries.ConfigEntry = object
+config_entries.ConfigFlow = _FlowHandler
+config_entries.OptionsFlow = _FlowHandler
 core = types.ModuleType("homeassistant.core")
 core.HomeAssistant = object
 core.Event = object
 core.callback = lambda func: func
 helpers = types.ModuleType("homeassistant.helpers")
+helpers_config_validation = types.ModuleType("homeassistant.helpers.config_validation")
+helpers_config_validation.string = vol.Coerce(str)
+helpers_config_validation.boolean = vol.Boolean()
+helpers_service = types.ModuleType("homeassistant.helpers.service")
+helpers_service.async_register_admin_service = lambda hass, domain, service, handler, **kwargs: hass.services.async_register(
+    domain, service, handler, **kwargs
+)
 helpers_typing = types.ModuleType("homeassistant.helpers.typing")
 helpers_typing.ConfigType = dict
 helpers_typing.StateType = object
@@ -28,8 +70,36 @@ helpers_dispatcher = types.ModuleType("homeassistant.helpers.dispatcher")
 helpers_entity_platform = types.ModuleType("homeassistant.helpers.entity_platform")
 helpers_event = types.ModuleType("homeassistant.helpers.event")
 helpers_storage = types.ModuleType("homeassistant.helpers.storage")
+helpers_selector = types.ModuleType("homeassistant.helpers.selector")
+helpers.selector = helpers_selector
+
+
+class TextSelectorType:
+    PASSWORD = "password"
+
+
+class TextSelectorConfig(dict):
+    def __init__(self, *, type):
+        super().__init__(type=type)
+
+
+class TextSelector:
+    def __init__(self, config):
+        self.config = config
+
+    def __call__(self, value):
+        if not isinstance(value, str):
+            raise vol.Invalid("expected string")
+        return value
+
+
+helpers_selector.TextSelector = TextSelector
+helpers_selector.TextSelectorConfig = TextSelectorConfig
+helpers_selector.TextSelectorType = TextSelectorType
 helpers_update_coordinator = types.ModuleType("homeassistant.helpers.update_coordinator")
 components = types.ModuleType("homeassistant.components")
+components_diagnostics = types.ModuleType("homeassistant.components.diagnostics")
+components_diagnostics.async_redact_data = _redact_data
 components_button = types.ModuleType("homeassistant.components.button")
 components_binary_sensor = types.ModuleType("homeassistant.components.binary_sensor")
 components_frontend = types.ModuleType("homeassistant.components.frontend")
@@ -46,6 +116,8 @@ util = types.ModuleType("homeassistant.util")
 util_dt = types.ModuleType("homeassistant.util.dt")
 helpers_entity = types.ModuleType("homeassistant.helpers.entity")
 helpers_entity_registry = types.ModuleType("homeassistant.helpers.entity_registry")
+helpers_device_registry = types.ModuleType("homeassistant.helpers.device_registry")
+helpers_area_registry = types.ModuleType("homeassistant.helpers.area_registry")
 
 try:
     BaseStrEnum = enum.StrEnum
@@ -97,16 +169,20 @@ class Store:
 
 
 class DataUpdateCoordinator:
-    def __init__(self, hass, logger, name="") -> None:
+    def __init__(self, hass, logger, name="", config_entry=None) -> None:
         self.hass = hass
         self.logger = logger
         self.name = name
+        self.config_entry = config_entry
         self.data = {}
 
     def __class_getitem__(cls, item):
         return cls
 
     async def async_request_refresh(self):
+        return None
+
+    async def async_shutdown(self):
         return None
 
     def async_set_updated_data(self, data):
@@ -164,11 +240,16 @@ components_sensor.SensorEntityDescription = SensorEntityDescription
 components_switch.SwitchEntity = _Entity
 helpers_entity.EntityCategory = EntityCategory
 helpers_entity_registry.async_get = lambda hass: None
+helpers_device_registry.async_get = lambda hass: None
+helpers_area_registry.async_get = lambda hass: None
+util.slugify = lambda value: re.sub(r"[^a-z0-9_]+", "_", value.lower()).strip("_")
 util_dt.now = lambda: datetime.now(timezone.utc)
 util.dt = util_dt
 
 sys.modules.setdefault("homeassistant", homeassistant)
+sys.modules.setdefault("homeassistant.helpers.selector", helpers_selector)
 sys.modules.setdefault("homeassistant.components", components)
+sys.modules.setdefault("homeassistant.components.diagnostics", components_diagnostics)
 sys.modules.setdefault("homeassistant.components.button", components_button)
 sys.modules.setdefault("homeassistant.components.binary_sensor", components_binary_sensor)
 sys.modules.setdefault("homeassistant.components.frontend", components_frontend)
@@ -183,10 +264,14 @@ sys.modules.setdefault("homeassistant.components.switch", components_switch)
 sys.modules.setdefault("homeassistant.config_entries", config_entries)
 sys.modules.setdefault("homeassistant.core", core)
 sys.modules.setdefault("homeassistant.helpers", helpers)
+sys.modules.setdefault("homeassistant.helpers.config_validation", helpers_config_validation)
+sys.modules.setdefault("homeassistant.helpers.service", helpers_service)
 sys.modules.setdefault("homeassistant.helpers.aiohttp_client", helpers_aiohttp_client)
 sys.modules.setdefault("homeassistant.helpers.dispatcher", helpers_dispatcher)
 sys.modules.setdefault("homeassistant.helpers.entity", helpers_entity)
 sys.modules.setdefault("homeassistant.helpers.entity_registry", helpers_entity_registry)
+sys.modules.setdefault("homeassistant.helpers.device_registry", helpers_device_registry)
+sys.modules.setdefault("homeassistant.helpers.area_registry", helpers_area_registry)
 sys.modules.setdefault("homeassistant.helpers.entity_platform", helpers_entity_platform)
 sys.modules.setdefault("homeassistant.helpers.event", helpers_event)
 sys.modules.setdefault("homeassistant.helpers.storage", helpers_storage)

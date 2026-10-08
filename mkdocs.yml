@@ -1,5 +1,5 @@
 site_name: Herald AI Notification Center
-site_description: Production-ready Home Assistant AI notification control plane
+site_description: Home Assistant notification routing, policies, queue, and dashboard
 site_url: https://mesteriis.github.io/ha-herald/
 repo_url: https://github.com/Mesteriis/ha-herald
 repo_name: Mesteriis/ha-herald
@@ -7,7 +7,11 @@ nav:
   - Overview: index.md
   - Architecture: architecture.md
   - System: system.md
+  - AI Characters: characters.md
+  - Настройки интеграции: options.md
   - Controls: controls.md
+  - Настройка правил: rule_editor.md
+  - Настройка каналов: channel_setup.md
   - API: api.md
   - Flows: flows.md
   - Dashboard: dashboard.md

@@ -13,7 +13,7 @@ except AttributeError:
 
 DOMAIN = "herald"
 NAME = "Центр уведомлений Herald"
-VERSION = "0.4.0"  # x-release-please-version
+VERSION = "0.5.0"  # x-release-please-version
 PLATFORMS: list[str] = ["sensor", "binary_sensor", "switch", "select", "number", "button"]
 
 DATA_YAML_CONFIG = "yaml_config"
@@ -29,6 +29,8 @@ NOTIFICATION_POLICIES_STORAGE_KEY = f"{DOMAIN}.notification_policies"
 
 SERVICE_NOTIFY = "notify"
 SERVICE_ROUTE_PREVIEW = "route_preview"
+SERVICE_PREVIEW_NOTIFICATION_POLICY = "preview_notification_policy"
+SERVICE_CONFIGURATION_CHECK = "configuration_check"
 SERVICE_GENERATE_DASHBOARD = "generate_dashboard"
 SERVICE_SET_FLOW_STATE = "set_flow_state"
 SERVICE_TRACE_SNAPSHOT = "trace_snapshot"
@@ -47,6 +49,8 @@ ACTION_ACK = "HERALD_ACK"
 ACTION_SNOOZE = "HERALD_SNOOZE"
 
 CONF_OLLAMA = "ollama"
+CONF_AI_PROVIDER = "provider"
+CONF_AI_API_KEY = "api_key"
 CONF_HOST = "host"
 CONF_MODEL = "model"
 CONF_ENABLED = "enabled"
@@ -98,9 +102,10 @@ CONF_PRESET = "preset"
 DEFAULT_NAME = NAME
 DEFAULT_OLLAMA_HOST = "http://ollama.local:11434"
 DEFAULT_OLLAMA_MODEL = "llama3"
+DEFAULT_AI_PROVIDER = "ollama"
 DEFAULT_QUIET_HOURS_START = "23:00"
 DEFAULT_QUIET_HOURS_END = "08:00"
-DEFAULT_DASHBOARD_PRESET = "overview"
+DEFAULT_DASHBOARD_PRESET = "dashboard"
 DEFAULT_SUMMARY_WINDOW_SECONDS = 75
 DEFAULT_TRACE_LIMIT = 100
 DEFAULT_RECENT_LIMIT = 20
@@ -164,12 +169,21 @@ DEFAULT_FLOW_CHANNELS: tuple[str, ...] = ("persistent_default", "system_log_defa
 QUIET_HOURS_POLICY_DEFAULT = "default"
 QUIET_HOURS_POLICY_ALLOW = "allow"
 QUIET_HOURS_POLICY_BLOCK = "block"
-SUPPORTED_DASHBOARD_PRESETS: tuple[str, ...] = ("overview", "rooms", "roles")
+SUPPORTED_DASHBOARD_PRESETS: tuple[str, ...] = ("dashboard", "overview", "rooms", "roles")
 
 REDACT_CONFIG = {
     CONF_HOST,
     CONF_CHAT_ID,
     CONF_THREAD_ID,
+    "api_key",
+    "access_token",
+    "refresh_token",
+    "token",
+    "password",
+    "secret",
+    "client_secret",
+    "authorization",
+    "headers",
 }
 
 

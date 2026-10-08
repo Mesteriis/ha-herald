@@ -1,10 +1,13 @@
 {
   "title": "Herald Notification Center",
   "config": {
+    "error": {
+      "invalid_time": "Saisissez une heure valide au format HH:MM (00:00–23:59)."
+    },
     "step": {
       "user": {
         "title": "Herald Notification Center",
-        "description": "Créez l'entrée Herald Notification Framework.",
+        "description": "Configurez la livraison des notifications Herald et la génération facultative de texte.",
         "data": {
           "name": "Nom",
           "host": "Hôte Ollama",
@@ -15,35 +18,181 @@
       }
     },
     "abort": {
+      "invalid_quiet_hours": "Saisissez une heure valide au format HH:MM (00:00–23:59).",
       "single_instance_allowed": "Une seule instance de Herald est prise en charge."
     }
   },
   "options": {
+    "error": {
+      "invalid_time": "Saisissez une heure valide au format HH:MM (00:00–23:59).",
+      "invalid_selection": "Sélectionnez un élément disponible dans la liste.",
+      "invalid_value": "Vérifiez le format et les valeurs autorisées pour ce champ.",
+      "invalid_host": "Pour une API compatible OpenAI, utilisez une URL de base HTTPS, se terminant éventuellement par /v1."
+    },
     "step": {
       "init": {
-        "title": "Options Herald",
-        "description": "Ajustez Ollama, les heures calmes, la policy de maintenance, les seuils par canal et les politiques par flux.",
+        "title": "Paramètres de Herald",
+        "description": "Choisissez une section. Enregistrer ferme la fenêtre et ne modifie que les champs édités ; les autres paramètres sont conservés.",
+        "menu_options": {
+          "quiet_hours": "Heures calmes",
+          "ai": "Génération de texte",
+          "maintenance": "Mode maintenance",
+          "channel_select": "Canaux de livraison",
+          "flow_select": "Flux de notifications"
+        }
+      },
+      "quiet_hours": {
+        "title": "Heures calmes",
+        "description": "Définissez les heures calmes selon l’heure locale de Home Assistant. Les canaux et les règles déterminent les livraisons autorisées.",
         "data": {
-          "host": "Hôte Ollama",
-          "model": "Modèle Ollama",
           "start": "Début des heures calmes",
-          "end": "Fin des heures calmes",
-          "maintenance_mode_entity": "Entité de maintenance",
-          "maintenance_min_level": "Niveau minimum en maintenance"
+          "end": "Fin des heures calmes"
+        },
+        "data_description": {
+          "start": "Utilisez HH:MM, de 00:00 à 23:59. L’intervalle peut traverser minuit.",
+          "end": "Utilisez HH:MM, de 00:00 à 23:59. L’intervalle peut traverser minuit."
+        }
+      },
+      "ai": {
+        "title": "Génération de texte",
+        "description": "Choisissez Ollama ou une API compatible OpenAI. Enregistrer n’active pas l’IA et ne teste pas la connexion. Utilisez le commutateur IA de Herald. La clé enregistrée n’est pas affichée ; laisser ce champ vide la conserve.",
+        "data": {
+          "provider": "Fournisseur",
+          "host": "URL du serveur",
+          "model": "Identifiant du modèle",
+          "api_key": "Clé API (vide pour conserver l’ancienne)"
+        }
+      },
+      "maintenance": {
+        "title": "Mode maintenance",
+        "description": "Choisissez une entité externe facultative pour le mode maintenance. Le mode est actif si cette entité ou l’interrupteur de maintenance de Herald est activé.",
+        "data": {
+          "maintenance_mode_entity": "Entité externe de maintenance"
+        },
+        "data_description": {
+          "maintenance_mode_entity": "Identifiant de l’entité dont l’état on active la maintenance. Laissez vide pour supprimer ce lien externe ; l’interrupteur de maintenance de Herald reste disponible."
+        }
+      },
+      "channel_select": {
+        "title": "Canaux de livraison",
+        "description": "Choisissez un canal existant. La création de canaux et la configuration des identifiants des fournisseurs ne sont pas disponibles ici.",
+        "data": {
+          "channel": "Canal"
+        }
+      },
+      "channel": {
+        "title": "Canal : {channel_name}",
+        "description": "Seuls les paramètres de ce canal changent. Un canal activé peut être utilisé, sans confirmation de livraison.",
+        "data": {
+          "enabled": "Canal activé",
+          "min_level": "Importance minimale"
+        },
+        "data_description": {
+          "enabled": "Un canal désactivé est exclu de la livraison normale. Un test explicite et autorisé du canal peut ignorer ce réglage. Les restrictions générales et les règles restent applicables.",
+          "min_level": "Les notifications normales sous ce seuil sont ignorées. Un test explicite et autorisé peut ignorer le seuil du canal ; les autres restrictions restent applicables."
+        }
+      },
+      "flow_select": {
+        "title": "Flux de notifications",
+        "description": "Choisissez un flux existant pour régler les limites de répétition et le personnage des résumés.",
+        "data": {
+          "flow": "Flux de notifications"
+        }
+      },
+      "flow": {
+        "title": "Flux : {flow_name}",
+        "description": "Définissez les valeurs de ce flux. Une règle peut remplacer l’intervalle entre livraisons et une requête peut remplacer la suppression des doublons. Enregistrer n’active pas les résumés.",
+        "data": {
+          "summary_personality": "Personnage des résumés",
+          "cooldown_seconds": "Intervalle entre livraisons, secondes",
+          "dedup_window_seconds": "Suppression des doublons, secondes"
+        },
+        "data_description": {
+          "summary_personality": "Une valeur vide supprime le choix spécifique aux résumés. Le personnage de la requête, du flux ou le personnage par défaut est alors utilisé.",
+          "cooldown_seconds": "Ignore les notifications pendant cet intervalle après la dernière livraison du flux. 0 désactive cette limite. L’envoi n’est pas différé.",
+          "dedup_window_seconds": "Ignore les événements répétés identiques pendant cet intervalle. 0 désactive ce filtre. L’envoi n’est pas différé."
         }
       }
+    },
+    "abort": {
+      "no_channels": "Aucun canal n’est disponible pour modification. Vérifiez la configuration des canaux Herald.",
+      "no_flows": "Aucun flux de notifications n’est disponible pour modification.",
+      "channel_unavailable": "Ce canal n’est plus disponible. Rouvrez les paramètres et choisissez un canal disponible.",
+      "flow_unavailable": "Ce flux n’est plus disponible. Rouvrez les paramètres et choisissez un flux disponible."
     }
   },
   "entity": {
     "sensor": {
-      "status": {"name": "Statut"},
-      "notifications_today": {"name": "Notifications du jour"},
-      "deliveries_today": {"name": "Livrées aujourd'hui"},
-      "dropped_today": {"name": "Écartées aujourd'hui"},
-      "errors_today": {"name": "Erreurs du jour"},
-      "ai_requests_today": {"name": "Requêtes AI du jour"},
-      "last_notification": {"name": "Dernière notification"},
-      "queue_size": {"name": "Taille de la file"}
+      "status": {
+        "name": "Statut"
+      },
+      "notifications_today": {
+        "name": "Notifications du jour"
+      },
+      "deliveries_today": {
+        "name": "Livrées aujourd'hui"
+      },
+      "dropped_today": {
+        "name": "Écartées aujourd'hui"
+      },
+      "errors_today": {
+        "name": "Erreurs du jour"
+      },
+      "ai_requests_today": {
+        "name": "Requêtes AI du jour"
+      },
+      "last_notification": {
+        "name": "Dernière notification"
+      },
+      "queue_size": {
+        "name": "Taille de la file"
+      }
+    }
+  },
+  "services": {
+    "preview_notification_policy": {
+      "name": "Preview notification rule",
+      "description": "Preview a draft without saving or sending. Scenarios change routing context; real states and time remain current.",
+      "fields": {
+        "notification_key": {
+          "name": "Notification key"
+        },
+        "policy": {
+          "name": "Unsaved rule"
+        },
+        "scenario": {
+          "name": "Scenario"
+        },
+        "message": {
+          "name": "Example message"
+        }
+      }
+    },
+    "set_notification_policy": {
+      "name": "Configurer une règle de notification",
+      "description": "Modifie les champs sélectionnés. Les champs omis conservent leurs valeurs enregistrées.",
+      "fields": {
+        "users": {
+          "name": "Destinataires des messages personnels",
+          "description": "Identifiants person ; null hérite, une liste vide bloque tous les envois. Les canaux communs et le son restent partagés."
+        },
+        "target_room": {
+          "name": "Pièce pour la voix et la TV",
+          "description": "Pièce connue ; null hérite. Aucun repli vers une autre pièce."
+        },
+        "presence": {
+          "name": "Condition de présence",
+          "description": "Toujours, seulement si quelqu’un est à la maison ou si personne n’y est."
+        },
+        "quiet_hours": {
+          "name": "Pendant les heures calmes",
+          "description": "Hériter des restrictions, garder les canaux texte autorisés ou ignorer. Ne reporte pas l’envoi."
+        }
+      }
+    },
+    "configuration_check": {
+      "name": "Vérifier la configuration des notifications",
+      "description": "Examine les réglages locaux, services, entités et restrictions sans envoi, modification ni appel IA. Les identifiants et connexions aux fournisseurs ne sont pas testés."
     }
   }
 }

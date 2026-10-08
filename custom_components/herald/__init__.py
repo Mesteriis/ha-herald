@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Mapping
+from copy import deepcopy
+from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
@@ -20,6 +24,27 @@ from .const import (
 
 CONFIG_SCHEMA = vol.Schema({DOMAIN: dict}, extra=vol.ALLOW_EXTRA)
 _LOGGER = logging.getLogger(__name__)
+
+
+def _merge_config(*layers: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge nested YAML, entry and options mappings without mutating any layer."""
+    merged: dict[str, Any] = {}
+    for layer in layers:
+        for key, value in layer.items():
+            previous = merged.get(key)
+            if isinstance(value, Mapping) and isinstance(previous, Mapping):
+                merged[key] = _merge_config(previous, value)
+            else:
+                merged[key] = deepcopy(value)
+    return merged
+
+
+async def _async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Apply edited control values before reload, without replaying older snapshots."""
+    coordinator = hass.data.get(DOMAIN, {}).get(DATA_COORDINATORS, {}).get(entry.entry_id)
+    if coordinator is not None:
+        await coordinator.async_apply_option_control_updates(entry.options)
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -43,34 +68,14 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Herald from a config entry."""
     from .coordinator import HeraldCoordinator
-    from .services import async_setup_services
+    from .services import async_setup_services, async_unload_services
 
     hass.data.setdefault(DOMAIN, {})
     coordinators = hass.data[DOMAIN].setdefault(DATA_COORDINATORS, {})
-    raw_config = dict(entry.data)
-    if yaml_config := dict(hass.data[DOMAIN].get(DATA_YAML_CONFIG, {})):
-        raw_config = {**yaml_config, **raw_config}
-    if entry.options:
-        raw_config = {**raw_config, **dict(entry.options)}
-        for section in ("ollama", "quiet_hours", "router"):
-            if section in entry.options:
-                raw_config[section] = {
-                    **dict(raw_config.get(section, {})),
-                    **dict(entry.options[section]),
-                }
-        for section in ("channels", "flows"):
-            if section not in entry.options:
-                continue
-            merged = {
-                key: dict(value)
-                for key, value in dict(raw_config.get(section, {})).items()
-            }
-            for key, value in dict(entry.options[section]).items():
-                merged[key] = {
-                    **dict(merged.get(key, {})),
-                    **dict(value),
-                }
-            raw_config[section] = merged
+    raw_config = _merge_config(
+        hass.data[DOMAIN].get(DATA_YAML_CONFIG, {}), entry.data, entry.options
+    )
+    setup_complete = False
     try:
         coordinator = HeraldCoordinator(hass, entry, raw_config)
         coordinators[entry.entry_id] = coordinator
@@ -82,10 +87,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.exception("Herald frontend registration failed; continuing with core setup")
         await async_setup_services(hass)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        entry.async_on_unload(entry.add_update_listener(_async_update_options))
+        setup_complete = True
         return True
     except Exception:  # noqa: BLE001
         _LOGGER.exception("Herald setup failed")
         raise
+    finally:
+        if not setup_complete:
+            cleanup = [async_unload_services(hass)]
+            failed_coordinator = coordinators.pop(entry.entry_id, None)
+            if failed_coordinator is not None:
+                cleanup.append(failed_coordinator.async_shutdown())
+            registration = hass.data[DOMAIN].pop(DATA_FRONTEND_REGISTRATION, None)
+            if registration is not None:
+                cleanup.append(registration.async_shutdown())
+            hass.data[DOMAIN].pop(DATA_FRONTEND_REGISTERED, None)
+            for result in await asyncio.gather(*cleanup, return_exceptions=True):
+                if isinstance(result, BaseException):
+                    _LOGGER.error("Herald setup cleanup failed: %s", type(result).__name__)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -96,10 +116,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not unload_ok:
         return False
 
-    coordinator = hass.data[DOMAIN][DATA_COORDINATORS].pop(entry.entry_id)
+    coordinator = hass.data[DOMAIN][DATA_COORDINATORS][entry.entry_id]
+    registration = hass.data[DOMAIN].get(DATA_FRONTEND_REGISTRATION)
+    try:
+        await coordinator.async_shutdown()
+    finally:
+        if registration is not None:
+            await registration.async_shutdown()
+    hass.data[DOMAIN][DATA_COORDINATORS].pop(entry.entry_id)
     hass.data[DOMAIN].pop(DATA_FRONTEND_REGISTRATION, None)
     hass.data[DOMAIN].pop(DATA_FRONTEND_REGISTERED, None)
-    await coordinator.async_shutdown()
     await async_unload_services(hass)
     return True
 
@@ -116,6 +142,12 @@ async def _async_register_frontend(hass: HomeAssistant, coordinator) -> None:
         dashboard_factory=coordinator.build_dashboard_config,
         sidebar_visible_getter=coordinator.controls.dashboard_sidebar_enabled,
     )
-    await registration.async_register()
+    registered = False
+    try:
+        await registration.async_register()
+        registered = True
+    finally:
+        if not registered:
+            await registration.async_shutdown()
     hass.data[DOMAIN][DATA_FRONTEND_REGISTRATION] = registration
     hass.data[DOMAIN][DATA_FRONTEND_REGISTERED] = True

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_AWAY_CHANNELS,
@@ -40,6 +41,7 @@ ROOM_ALIASES: dict[str, str] = {
     "туалет": "tualet",
 }
 INACTIVE_TV_STATES: set[str] = {"off", "idle", "standby", "unavailable", "unknown"}
+_MEDIA_PLAYER_ROOM_REFRESH_SECONDS = 60
 
 
 class PresenceResolver:
@@ -48,17 +50,22 @@ class PresenceResolver:
     def __init__(self, hass: HomeAssistant, config: HeraldConfig) -> None:
         self._hass = hass
         self._config = config
-        self._room_entities_ready_once = False
-        self._room_wait_exhausted = False
         self._controls: HeraldControlManager | None = None
+        self._media_player_rooms: dict[str, str] = {}
+        self._media_player_rooms_refresh_at = 0.0
+        self._media_player_rooms_lock = asyncio.Lock()
 
     def attach_controls(self, controls: HeraldControlManager) -> None:
         """Attach Herald-owned runtime controls for fallback room state."""
         self._controls = controls
 
+    def snapshot(self) -> PresenceSnapshot:
+        """Read current HA presence for configuration inspection without discovery or I/O."""
+        return self._resolve_presence(explicit_room=None)
+
     async def async_resolve(self, context: NotificationContext) -> PresenceSnapshot:
         """Return the presence snapshot for the current notification context."""
-        await self._async_wait_for_room_entities()
+        await self._async_refresh_media_player_rooms()
         return self._resolve_presence(explicit_room=coerce_room(context.room))
 
     async def async_resolve_from_request(self, request: HeraldRequest) -> PresenceSnapshot:
@@ -70,7 +77,7 @@ class PresenceResolver:
         ) or coerce_room(
             (request.context or {}).get("room_name") if request.context else None
         ) or coerce_room(request.legacy_room)
-        await self._async_wait_for_room_entities()
+        await self._async_refresh_media_player_rooms()
         return self._resolve_presence(explicit_room=explicit_room)
 
     def away_channels(self) -> list[str]:
@@ -140,23 +147,21 @@ class PresenceResolver:
         people_home: list[str] = []
         group_state = self._hass.states.get(family_group)
         if group_state and (members := group_state.attributes.get("entity_id")):
-            for entity_id in members:
-                state = self._hass.states.get(entity_id)
+            person_states = [self._hass.states.get(entity_id) for entity_id in members]
+            for entity_id, state in zip(members, person_states, strict=False):
                 if state is not None and state.state == "home":
                     people_home.append(entity_id)
         else:
-            for state in self._hass.states.async_all("person"):
+            person_states = list(self._hass.states.async_all("person"))
+            for state in person_states:
                 if state.state == "home":
                     people_home.append(state.entity_id)
 
-        nobody_home = False
         nobody_state = self._hass.states.get(nobody_entity)
-        if nobody_state is not None:
+        if nobody_state is not None and nobody_state.state in {"on", "off"}:
             nobody_home = nobody_state.state == "on"
-        elif people_home:
-            nobody_home = False
         else:
-            nobody_home = True
+            nobody_home = not people_home
 
         home_mode_state = self._hass.states.get(home_mode_entity)
         if home_mode_state is not None and home_mode_state.state not in {"unknown", "unavailable"}:
@@ -172,48 +177,25 @@ class PresenceResolver:
             for room_name, entity_id in room_sensors.items()
             if self._room_entity_is_on(room_name, entity_id)
         ]
-        for room_name in self._active_tv_rooms():
-            if room_name not in occupied_rooms:
-                occupied_rooms.append(room_name)
+        if not presence_cfg.get("occupied_room_routing", False):
+            for room_name in self._active_tv_rooms():
+                if room_name not in occupied_rooms:
+                    occupied_rooms.append(room_name)
         primary_room = explicit_room or (occupied_rooms[0] if occupied_rooms else None)
 
         return PresenceSnapshot(
             people_home=people_home,
             nobody_home=nobody_home,
+            absence_confirmed=bool(
+                nobody_state is not None and nobody_state.state == "on"
+                and person_states
+                and all(state is not None and state.state not in {"home", "unknown", "unavailable"} for state in person_states)
+            ),
             home_mode=home_mode,
             occupied_rooms=occupied_rooms,
             primary_room=primary_room,
             quiet_hours=self._in_quiet_hours(),
         )
-
-    async def _async_wait_for_room_entities(self) -> None:
-        """Wait briefly for real room occupancy entities during cold startup."""
-        if self._room_entities_ready_once or self._room_wait_exhausted:
-            return
-        if self._real_room_entities_ready():
-            self._room_entities_ready_once = True
-            return
-
-        for _ in range(30):
-            await asyncio.sleep(2)
-            if self._real_room_entities_ready():
-                self._room_entities_ready_once = True
-                return
-
-        self._room_wait_exhausted = True
-
-    def _real_room_entities_ready(self) -> bool:
-        """Return True once at least one real room occupancy entity is available."""
-        for entity_id in self.room_sensors().values():
-            if not entity_id.startswith("binary_sensor.room_"):
-                continue
-            state = self._hass.states.get(entity_id)
-            if state is None or state.state in {"unknown", "unavailable"}:
-                continue
-            return True
-        if self._active_tv_rooms():
-            return True
-        return False
 
     def _room_entity_is_on(self, room_name: str, entity_id: str) -> bool:
         """Return True when a real or Herald-owned room presence entity is active."""
@@ -224,21 +206,30 @@ class PresenceResolver:
             return False
         return bool(self._controls and self._controls.room_presence(room_name))
 
-    def _active_tv_rooms(self) -> list[str]:
-        """Return rooms where a TV is currently active, treating them as occupied."""
+    async def _async_refresh_media_player_rooms(self) -> None:
+        """Load storage mappings off the event loop and cache them briefly."""
         config = getattr(self._hass, "config", None)
-        media_player_rooms: dict[str, str] = {}
-        if config is not None and hasattr(config, "path"):
-            media_player_rooms = _load_media_player_rooms(
+        if config is None or not hasattr(config, "path"):
+            return
+        async with self._media_player_rooms_lock:
+            if asyncio.get_running_loop().time() < self._media_player_rooms_refresh_at:
+                return
+            self._media_player_rooms = await self._hass.async_add_executor_job(
+                _load_media_player_rooms,
                 Path(config.path(".storage/core.entity_registry")),
                 Path(config.path(".storage/core.device_registry")),
             )
+            self._media_player_rooms_refresh_at = (
+                asyncio.get_running_loop().time() + _MEDIA_PLAYER_ROOM_REFRESH_SECONDS
+            )
 
+    def _active_tv_rooms(self) -> list[str]:
+        """Return active TV rooms using the cached registry mapping."""
         active_rooms: list[str] = []
         for entity_id, state in _iter_domain_states(self._hass, "media_player"):
             if not _looks_like_tv(entity_id, state):
                 continue
-            room_name = media_player_rooms.get(entity_id) or _infer_room_from_state(entity_id, state)
+            room_name = self._media_player_rooms.get(entity_id) or _infer_room_from_state(entity_id, state)
             if room_name is None:
                 continue
             state_value = str(getattr(state, "state", "")).strip().lower()
@@ -254,7 +245,7 @@ class PresenceResolver:
         end_text = self._config.quiet_hours.end
         start = datetime.strptime(start_text, "%H:%M").time()
         end = datetime.strptime(end_text, "%H:%M").time()
-        now_local = datetime.now().time()
+        now_local = dt_util.now().time()
         if start <= end:
             return start <= now_local <= end
         return now_local >= start or now_local <= end

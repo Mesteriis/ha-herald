@@ -24,6 +24,7 @@ def test_record_delivery_updates_analytics_counters() -> None:
         _async_persist_and_publish=_async_persist_and_publish,
         hass=SimpleNamespace(async_create_task=lambda coro: coro.close()),
     )
+    fake._record_decision = lambda context, explanation: HeraldCoordinator._record_decision(fake, context, explanation)
     fake._record_result_metrics = lambda context, results: HeraldCoordinator._record_result_metrics(
         fake,
         context,

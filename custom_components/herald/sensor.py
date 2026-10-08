@@ -47,8 +47,11 @@ SENSORS: tuple[HeraldSensorDescription, ...] = (
             "characters": data.get("characters", []),
             "plugins": data.get("plugins", {}),
             "control_entities": data.get("control_entities", {}),
+            "control_entity_ids": data.get("control_entity_ids", {}),
             "helper_bootstrap": data.get("helper_bootstrap", {}),
             "control_values": data.get("control_values", {}),
+            "effective_settings": data.get("effective_settings", {}),
+            "configuration_check": data.get("configuration_check", {}),
             "room_presence_sensors": data.get("room_presence_sensors", {}),
             "topology": data.get("topology", {}),
             "last_route_preview": data.get("last_route_preview", {}),
@@ -126,6 +129,7 @@ SENSORS: tuple[HeraldSensorDescription, ...] = (
             "control_entities": data.get("control_entities", {}),
             "helper_bootstrap": data.get("helper_bootstrap", {}),
             "control_values": data.get("control_values", {}),
+            "effective_settings": data.get("effective_settings", {}),
             "room_presence_sensors": data.get("room_presence_sensors", {}),
             "topology": data.get("topology", {}),
             "last_route_preview": data.get("last_route_preview", {}),
@@ -175,7 +179,7 @@ async def _async_migrate_analytics_sensor_entity_ids(
     registry = er.async_get(hass)
     for key, expected_entity_id in _ANALYTICS_SENSOR_ENTITY_IDS.items():
         unique_id = f"{entry.entry_id}_{key}"
-        current_entity_id = registry.async_get_entity_id(DOMAIN, "sensor", unique_id)
+        current_entity_id = registry.async_get_entity_id("sensor", DOMAIN, unique_id)
         if not current_entity_id or current_entity_id == expected_entity_id:
             continue
         try:

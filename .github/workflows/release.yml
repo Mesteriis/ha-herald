@@ -16,8 +16,11 @@ jobs:
           cache: npm
       - name: Install frontend tooling
         run: npm ci
-      - name: Build frontend
-        run: npm run build
+      - name: Validate frontend source and generated assets
+        run: |
+          npm run check
+          npm run build:check
+          npm run test:frontend
       - name: Package HACS repository
         run: zip -r herald-hacs.zip custom_components README.md CHANGELOG.md LICENSE hacs.json docs mkdocs.yml
       - name: Create release

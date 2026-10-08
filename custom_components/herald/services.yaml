@@ -169,7 +169,8 @@ notify:
         boolean: {}
     rewrite:
       name: Rewrite
-      description: Allow Herald AI rewriting before delivery.
+      description: Request Herald AI rewriting before delivery, respecting global and level AI controls. Set false to preserve the original text.
+      default: true
       selector:
         boolean: {}
     summarize:
@@ -202,6 +203,7 @@ generate_dashboard:
       selector:
         select:
           options:
+            - dashboard
             - overview
             - rooms
             - roles
@@ -377,6 +379,33 @@ set_notification_policy:
       description: Explicit channels for custom mode.
       selector:
         object: {}
+    users:
+      name: Personal message recipients
+      description: Person IDs. Null inherits; an empty list blocks all delivery. Selection narrows the request audience. Common channels and room audio remain shared.
+      selector:
+        object: {}
+    target_room:
+      name: Room for voice and TV
+      description: Known room name; null inherits. No fallback to devices in another room. Does not restrict personal text channels.
+      selector:
+        text: {}
+    presence:
+      name: Presence condition
+      selector:
+        select:
+          options:
+            - any
+            - someone_home
+            - nobody_home
+    quiet_hours:
+      name: During quiet hours
+      description: Inherit common restrictions, keep only eligible text channels, or skip the event. Does not defer delivery.
+      selector:
+        select:
+          options:
+            - inherit
+            - text_only
+            - mute
     level_override:
       name: Level override
       selector:
@@ -402,3 +431,42 @@ reset_notification_policy:
       required: true
       selector:
         text: {}
+
+configuration_check:
+  name: Check notification configuration
+  description: Inspect local channel settings, registered services, entities, and current restrictions. Does not send notifications, call AI, change settings, or test provider credentials and connectivity.
+  fields:
+    entry_id:
+      name: Integration entry
+      description: Optional Herald entry; normally selected automatically.
+      selector:
+        text: {}
+
+preview_notification_policy:
+  name: Preview notification rule
+  description: Preview a saved rule or unsaved draft without saving, sending notifications, or calling AI. Scenarios change routing context only; real entity states and flow time conditions remain current.
+  fields:
+    notification_key:
+      name: Notification key
+      required: true
+      selector:
+        text: {}
+    policy:
+      name: Unsaved rule changes
+      selector:
+        object: {}
+    scenario:
+      name: Scenario
+      default: current
+      selector:
+        select:
+          options:
+            - current
+            - quiet_hours
+            - away
+    message:
+      name: Example message
+      description: Optional exact text for duplicate checks. If omitted a sample is used.
+      selector:
+        text:
+          multiline: true

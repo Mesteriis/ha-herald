@@ -6,14 +6,6 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-LEGACY_MOBILE_CHANNELS = [
-    "mobile_iphone_aleksander",
-    "mobile_iphone_vi",
-    "mobile_ipad",
-    "mobile_macbook",
-    "mobile_aleksandrs_macbook_pro",
-]
-
 
 @dataclass(slots=True)
 class HeraldAI:
@@ -122,7 +114,7 @@ class HeraldRequest:
                 and "send_telegram" not in payload
             )
         )
-        if explicit_channels:
+        if "channels" in payload:
             legacy_channels = explicit_channels
         elif legacy_voice_payload:
             legacy_channels = ["voice_auto", "system_log_default"]
@@ -138,13 +130,13 @@ class HeraldRequest:
             if bool(payload.get("send_voice", True)):
                 legacy_channels.append("voice_auto")
             if bool(payload.get("send_mobile", True)):
-                legacy_channels.extend(LEGACY_MOBILE_CHANNELS)
+                metadata["legacy_mobile_channels"] = True
             if bool(payload.get("send_telegram", True)):
                 legacy_channels.append("telegram_default")
         else:
             legacy_channels = explicit_channels
 
-        rewrite = bool(payload.get("rewrite", False))
+        rewrite = bool(payload.get("rewrite", True))
         if "rewrite" not in payload and "already_humanized" in payload:
             rewrite = not bool(payload.get("already_humanized", False))
 

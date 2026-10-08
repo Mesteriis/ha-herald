@@ -83,3 +83,44 @@ def test_severity_resolution_and_fallback() -> None:
     assert resolve_requested_flow(flows, None, "ai") == "ai_events"
     assert resolve_requested_flow(flows, None, "system") == "system_events"
     assert resolve_requested_flow(flows, "live_contract", "info") == "system_events"
+
+
+@pytest.mark.parametrize(
+    "time_condition, local_hour, expected",
+    [
+        ({"after": "22:00", "before": "08:00"}, 21, False),
+        ({"after": "22:00", "before": "08:00"}, 22, True),
+        ({"after": "22:00", "before": "08:00"}, 23, True),
+        ({"after": "22:00", "before": "08:00"}, 0, True),
+        ({"after": "22:00", "before": "08:00"}, 8, True),
+        ({"after": "22:00", "before": "08:00"}, 9, False),
+        ({"after": "08:00", "before": "20:00"}, 8, True),
+        ({"after": "08:00", "before": "20:00"}, 12, True),
+        ({"after": "08:00", "before": "20:00"}, 20, True),
+        ({"after": "08:00", "before": "20:00"}, 23, False),
+        ({"after": "22:00"}, 23, True),
+        ({"after": "22:00"}, 1, False),
+        ({"before": "08:00"}, 1, True),
+        ({"before": "08:00"}, 23, False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_time_conditions_use_ha_local_time_and_support_midnight(monkeypatch, time_condition, local_hour, expected) -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from custom_components.herald import flows as flows_module
+
+    local_now = datetime(2026, 9, 30, local_hour, tzinfo=ZoneInfo("Europe/Madrid"))
+    monkeypatch.setattr(flows_module.dt_util, "now", lambda: local_now)
+    flow = FlowConfig(name="system_events", conditions={"time": time_condition})
+    context = NotificationContext(
+        flow="system_events",
+        title="System",
+        message="Check time",
+        level="info",
+        source="automation.test",
+        timestamp=local_now.isoformat(),
+    )
+
+    assert await async_flow_matches(_FakeHass({}), flow, context) is expected

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -23,11 +24,14 @@ from .const import (
     SEVERITY_RANK,
 )
 from .controls import HeraldControlManager
+from .decisions import explain_route
 from .flows import severity_allowed
 from .models import ChannelConfig, FlowConfig, HeraldConfig, NotificationContext, PresenceSnapshot
+from .policy_rules import has_rule_constraints, normalize_room
 from .presence import PresenceResolver
 
 _LOGGER = logging.getLogger(__name__)
+_SERVICE_CALL_TIMEOUT_SECONDS = 30
 
 ROOM_AUDIO_PRIORITY: tuple[str, ...] = ("alisa", "homepod")
 UNAVAILABLE_STATES: set[str] = {"off", "unavailable", "unknown"}
@@ -52,6 +56,8 @@ class HeraldRouter:
         presence: PresenceResolver,
         controls: HeraldControlManager,
         dashboard_recorder: Callable[..., dict[str, Any]] | None = None,
+        *,
+        rule_checker: Callable[[NotificationContext, PresenceSnapshot], str | None] | None = None,
     ) -> None:
         self._hass = hass
         self._config = config
@@ -59,7 +65,16 @@ class HeraldRouter:
         self._presence = presence
         self._controls = controls
         self._dashboard_recorder = dashboard_recorder
+        self._rule_checker = rule_checker
         self._hume_tts = HeraldHumeTTSChannel(hass)
+
+    async def async_setup(self) -> None:
+        """Start channel-owned resources."""
+        await self._hume_tts.async_setup()
+
+    async def async_shutdown(self) -> None:
+        """Release channel-owned resources after queued deliveries finish."""
+        await self._hume_tts.async_shutdown()
 
     async def async_route(
         self,
@@ -68,7 +83,28 @@ class HeraldRouter:
     ) -> list[dict[str, Any]]:
         """Route a notification to one or more output channels."""
         presence = await self._presence.async_resolve(context)
-        channel_names = self._resolve_channel_names(context, flow, presence)
+        check_rule = self._rule_checker is not None and has_rule_constraints(context.metadata.get("notification_policy", {}))
+        refresh_presence = check_rule or bool(
+            self._config.presence.get("occupied_room_routing")
+            or self._config.presence.get("remote_channels_away_only")
+        )
+        blocked_reason = self._rule_checker(context, presence) if check_rule else None
+        resolution_trace: list[dict[str, Any]] = []
+        channel_decisions: list[dict[str, Any]] = []
+        channel_names = [] if blocked_reason else self._resolve_channel_names(
+            context, flow, presence, resolution_trace=resolution_trace, channel_decisions=channel_decisions,
+        )
+        context.metadata["routing_explanation"] = explain_route({
+            "requested": {"flow": context.flow, "level": context.level},
+            "prechecks": {"maintenance_redirect": bool(context.metadata.get("maintenance_redirect")),
+                          "blocked_reason": blocked_reason},
+            "presence": presence.to_dict(), "resolution_trace": resolution_trace,
+            "channel_decisions": channel_decisions, "policy": context.metadata.get("notification_policy", {}),
+            "deliveries": [{"channel": name, "status": "planned"} for name in channel_names],
+            "resolved": {"final_channels": channel_names},
+        }, include_planned_steps=False)
+        if blocked_reason:
+            return [{"status": "dropped", "reason": blocked_reason, "flow": flow.name}]
         channels = [
             self._config.channels[name]
             for name in channel_names
@@ -85,31 +121,45 @@ class HeraldRouter:
         for user_key, bucket in channels_by_user.items():
             language = self._resolve_language(user_key, context, presence)
             character = self._resolve_character(user_key, context, flow, presence)
-            delivery_room = self._resolve_delivery_room(user_key, context, presence)
-            cache_key = (language, character or DEFAULT_PERSONALITY, delivery_room or "")
-            if cache_key not in rendered_cache:
-                rendered_cache[cache_key] = await self._ai_client.async_rewrite_payload(
-                    title=context.title,
-                    message=context.message,
-                    level=context.level,
-                    language=language,
-                    character=character,
-                    rewrite=context.rewrite,
-                    render_context=self._build_render_context(
-                        context=context,
-                        presence=presence,
-                        language=language,
-                        character=character,
-                        room=delivery_room,
-                    ),
-                )
-            payload = rendered_cache[cache_key]
-            ai_meta = {
-                key: value
-                for key, value in payload.items()
-                if key.startswith("_herald_ai_")
-            }
+            initial_payload = None
+            if not self._config.presence.get("occupied_room_routing"):
+                initial_room = self._resolve_delivery_room(user_key, context, presence)
+                initial_key = (language, character or DEFAULT_PERSONALITY, initial_room or "")
+                if initial_key not in rendered_cache:
+                    rendered_cache[initial_key] = await self._ai_client.async_rewrite_payload(
+                        title=context.title, message=context.message, level=context.level,
+                        language=language, character=character, rewrite=context.rewrite,
+                        render_context=self._build_render_context(
+                            context=context, presence=presence, language=language,
+                            character=character, room=initial_room,
+                        ),
+                    )
+                initial_payload = rendered_cache[initial_key]
             for channel in bucket:
+                if refresh_presence:
+                    # AI and earlier deliveries yield to HA; policies use fresh presence
+                    # immediately before each transport, without widening this batch.
+                    presence, blocked_reason = await self._async_rule_channel_check(context, flow, channel)
+                    if blocked_reason:
+                        results.append({"channel": channel.name, "status": "dropped", "reason": blocked_reason,
+                                        "flow": flow.name})
+                        continue
+                delivery_room = self._channel_delivery_room(channel, user_key, context, presence)
+                if initial_payload is not None:
+                    payload = initial_payload
+                else:
+                    cache_key = (language, character or DEFAULT_PERSONALITY, delivery_room or "")
+                    if cache_key not in rendered_cache:
+                        rendered_cache[cache_key] = await self._ai_client.async_rewrite_payload(
+                            title=context.title, message=context.message, level=context.level,
+                            language=language, character=character, rewrite=context.rewrite,
+                            render_context=self._build_render_context(
+                                context=context, presence=presence, language=language,
+                                character=character, room=delivery_room,
+                            ),
+                        )
+                    payload = rendered_cache[cache_key]
+                ai_meta = {key: value for key, value in payload.items() if key.startswith("_herald_ai_")}
                 result = await self._async_send_channel(
                     channel=channel,
                     title=payload["title"],
@@ -122,6 +172,33 @@ class HeraldRouter:
                 )
                 results.append({**result, **ai_meta})
         return results
+
+    async def _async_rule_channel_check(
+        self, context: NotificationContext, flow: FlowConfig, channel: ChannelConfig,
+    ) -> tuple[PresenceSnapshot, str | None]:
+        """Refresh constraints at a transport boundary after awaited preparation."""
+        presence = await self._presence.async_resolve(context)
+        reason = self._rule_checker(context, presence) if self._rule_checker is not None else None
+        if not reason and channel.name not in self._resolve_channel_names(context, flow, presence):
+            reason = self._policy_channel_rejection(channel, context, presence) or "policy_route_changed"
+        return presence, reason
+
+    def _rule_transport_guard(
+        self, context: NotificationContext, flow: FlowConfig, channel: ChannelConfig,
+    ) -> Callable[[], Awaitable[str | None]] | None:
+        """Provide a final guard only for policies requiring live constraints."""
+        if not (
+            self._config.presence.get("occupied_room_routing")
+            or self._config.presence.get("remote_channels_away_only")
+            or self._rule_checker is not None and has_rule_constraints(context.metadata.get("notification_policy", {}))
+        ):
+            return None
+
+        async def before_send() -> str | None:
+            _, reason = await self._async_rule_channel_check(context, flow, channel)
+            return reason
+
+        return before_send
 
     def build_route_preview(
         self,
@@ -150,8 +227,8 @@ class HeraldRouter:
         for user_key, bucket in channels_by_user.items():
             language = self._resolve_language(user_key, context, presence)
             character = self._resolve_character(user_key, context, flow, presence)
-            delivery_room = self._resolve_delivery_room(user_key, context, presence)
             for channel in bucket:
+                delivery_room = self._channel_delivery_room(channel, user_key, context, presence)
                 deliveries.append(
                     self._preview_channel_delivery(
                         channel=channel,
@@ -203,12 +280,17 @@ class HeraldRouter:
         channel_decisions: list[dict[str, Any]] | None = None,
     ) -> list[str]:
         explicit = list(context.channels)
+        if self._config.presence.get("occupied_room_routing"):
+            explicit = self._expand_occupied_room_channels(explicit, context, presence)
         if explicit and self._should_bypass_channel_policy(context):
-            selected = [
-                name
-                for name in dict.fromkeys(explicit)
-                if name in self._config.channels
-            ]
+            selected = []
+            for name in dict.fromkeys(explicit):
+                channel = self._config.channels.get(name)
+                reason = "missing_channel" if channel is None else self._policy_channel_rejection(channel, context, presence)
+                if reason:
+                    self._record_channel_decisions(channel_decisions, [], dropped=(name, reason))
+                else:
+                    selected.append(name)
             self._record_resolution_stage(
                 resolution_trace,
                 stage="explicit_bypass",
@@ -217,7 +299,33 @@ class HeraldRouter:
             )
             self._record_channel_decisions(channel_decisions, selected)
             return selected
-        candidate_names = explicit or list(flow.channels) or list(self._config.channels)
+        candidate_names = (
+            explicit if context.metadata.get("channels_explicit")
+            else explicit or list(flow.channels) or list(self._config.channels)
+        )
+        if self._config.presence.get("occupied_room_routing"):
+            candidate_names = self._expand_occupied_room_channels(candidate_names, context, presence)
+        eligible = []
+        for name in candidate_names:
+            channel = self._config.channels.get(name)
+            reason = None
+            if channel is None:
+                reason = "missing_channel"
+            elif rule_reason := self._policy_channel_rejection(channel, context, presence):
+                reason = rule_reason
+            elif not self._channel_available_for_context(channel, context):
+                reason = "channel_disabled"
+            elif not self._should_bypass_channel_policy(context) and not self._channel_type_enabled(channel):
+                reason = "channel_family_disabled"
+            elif not self._should_bypass_channel_policy(context) and not severity_allowed(context.level, channel.min_level):
+                reason = "channel_min_level"
+            elif not self._channel_matches_audience(channel, context, presence):
+                reason = "user_filter"
+            if reason:
+                self._record_channel_decisions(channel_decisions, [], dropped=(name, reason))
+            else:
+                eligible.append(name)
+        candidate_names = eligible
         self._record_resolution_stage(
             resolution_trace,
             stage="initial",
@@ -302,6 +410,33 @@ class HeraldRouter:
         )
         return list(dict.fromkeys(filtered))
 
+    def _expand_occupied_room_channels(
+        self, names: list[str], context: NotificationContext, presence: PresenceSnapshot,
+    ) -> list[str]:
+        """Replace conceptual voice delivery with one room channel per occupied room."""
+        requested = self._policy_target_room(context)
+        if requested is None and context.metadata.get("room_explicit", True):
+            requested = self._normalize_room_preference(context.room)
+        rooms = [requested] if requested not in {None, "auto", "all"} else presence.occupied_rooms
+        rooms = [room for room in dict.fromkeys(rooms) if room in presence.occupied_rooms]
+        expanded: list[str] = []
+        for name in names:
+            if name != "voice_auto":
+                expanded.append(name)
+                continue
+            for room in rooms:
+                expanded.extend(
+                    channel.name for channel in self._config.channels.values()
+                    if channel.room and normalize_room(channel.room) == room
+                    and channel.channel_type in {"tts", "tts_hume"}
+                )
+                expanded.extend(
+                    channel.name for channel in self._config.channels.values()
+                    if channel.room and normalize_room(channel.room) == room
+                    and channel.channel_type == "tv"
+                )
+        return list(dict.fromkeys(expanded))
+
     def _record_resolution_stage(
         self,
         resolution_trace: list[dict[str, Any]] | None,
@@ -361,7 +496,7 @@ class HeraldRouter:
     ) -> tuple[list[str], bool]:
         """Prefer channels that can directly reach one explicitly requested device."""
         device = str(context.device or "").strip()
-        if not device:
+        if not device or self._policy_target_room(context):
             return candidate_names, False
 
         matched = [
@@ -382,7 +517,7 @@ class HeraldRouter:
             return candidate_names
         away_channels = self._presence.away_channels()
         if away_channels:
-            return away_channels
+            return [name for name in candidate_names if name in away_channels]
         return [
             name
             for name in candidate_names
@@ -465,7 +600,7 @@ class HeraldRouter:
         context: NotificationContext,
         presence: PresenceSnapshot,
     ) -> list[str]:
-        room = context.room or presence.primary_room
+        room = self._policy_target_room(context) or context.room or presence.primary_room
         if room is None:
             return candidate_names
         normalized_room = self._normalize_room_preference(room)
@@ -475,7 +610,7 @@ class HeraldRouter:
         matched = [
             name
             for name in candidate_names
-            if self._channel_matches_room(self._config.channels.get(name), normalized_room)
+            if self._channel_matches_room(self._config.channels.get(name), normalized_room, canonical=bool(self._policy_target_room(context)))
         ]
         return matched + [name for name in candidate_names if name not in matched]
 
@@ -486,6 +621,25 @@ class HeraldRouter:
         presence: PresenceSnapshot,
     ) -> list[str]:
         """Keep only one local room device using alisa -> homepod -> tv priority."""
+        if self._config.presence.get("occupied_room_routing"):
+            winners: dict[tuple[str, str], tuple[tuple[int, int, str], str]] = {}
+            for name in candidate_names:
+                channel = self._config.channels.get(name)
+                if channel is None or not channel.room or channel.channel_type not in {"tts", "tts_hume", "tv"}:
+                    continue
+                room = normalize_room(channel.room)
+                score = self._local_channel_score(channel, context, room)
+                if score is None:
+                    continue
+                key = (room, "tv" if channel.channel_type == "tv" else "voice")
+                if key not in winners or score < winners[key][0]:
+                    winners[key] = (score, name)
+            selected = {name for _, name in winners.values()}
+            return [name for name in candidate_names if (
+                (channel := self._config.channels.get(name)) is None
+                or channel.channel_type not in {"tts", "tts_hume", "tv"}
+                or name in selected
+            )]
         room = self._resolve_delivery_room(None, context, presence)
         if room in {None, "auto", "all"}:
             return candidate_names
@@ -496,7 +650,7 @@ class HeraldRouter:
             if (
                 (channel := self._config.channels.get(name)) is not None
                 and channel.channel_type in {"tts", "tts_hume", "tv"}
-                and self._channel_matches_room(channel, room)
+                and self._channel_matches_room(channel, room, canonical=bool(self._policy_target_room(context)))
             )
         ]
         if len(local_names) <= 1:
@@ -516,9 +670,15 @@ class HeraldRouter:
         local_name_set = set(local_names)
         return [best_name, *[name for name in candidate_names if name not in local_name_set]]
 
-    def _channel_matches_room(self, channel: ChannelConfig | None, room: str) -> bool:
+    def _channel_matches_room(self, channel: ChannelConfig | None, room: str, *, canonical: bool = False) -> bool:
         if channel is None:
             return False
+        if canonical:
+            return bool(
+                channel.room is not None and normalize_room(channel.room) == room
+                or any(len(self._policy_room_matches(channel.data.get(key), room)) == 1
+                       for key in ("room_targets", "audio_targets"))
+            )
         if channel.room == room:
             return True
         if room in dict(channel.data.get("room_targets", {})):
@@ -534,7 +694,7 @@ class HeraldRouter:
         """Return one sortable score for room-local channel preference."""
         if channel is None or channel.channel_type not in {"tts", "tts_hume", "tv"}:
             return None
-        if not self._channel_matches_room(channel, room):
+        if not self._channel_matches_room(channel, room, canonical=bool(self._policy_target_room(context))):
             return None
 
         if channel.channel_type == "tv":
@@ -556,10 +716,15 @@ class HeraldRouter:
             return (kind_rank, int(audio_target.get("priority", 99)), channel.name)
 
         room_audio_targets = dict(channel.data.get("audio_targets", {}))
-        if room in room_audio_targets:
+        if room in room_audio_targets or (
+            self._policy_target_room(context) and self._policy_room_matches(room_audio_targets, room)
+        ):
             return None
         target_entity_id = self._resolve_tts_entity_id(channel, context, delivery_room=room)
-        if target_entity_id is None:
+        if not isinstance(target_entity_id, str):
+            return None
+        target_state = self._hass.states.get(target_entity_id)
+        if target_state is None or str(target_state.state).strip().lower() in UNAVAILABLE_STATES:
             return None
         return (1, 99, channel.name)
 
@@ -599,6 +764,109 @@ class HeraldRouter:
                 if entity_id:
                     entity_ids.append(entity_id)
         return entity_ids
+
+    @staticmethod
+    def _has_rule_scope(context: NotificationContext) -> bool:
+        return bool(
+            context.metadata.get("policy_users_explicit")
+            or context.metadata.get("policy_target_room")
+            or context.metadata.get("policy_text_only")
+            or has_rule_constraints(context.metadata.get("notification_policy", {}))
+        )
+
+    def _policy_target_room(self, context: NotificationContext) -> str | None:
+        room = context.metadata.get("policy_target_room")
+        return normalize_room(room) if room else None
+
+    @staticmethod
+    def _policy_room_matches(mapping: Any, room: str) -> list[Any]:
+        """Match canonical room aliases while retaining duplicate-key ambiguity."""
+        if not isinstance(mapping, dict):
+            return []
+        return [value for key, value in mapping.items() if normalize_room(key) == room]
+
+    def _room_audio_targets(
+        self, channel: ChannelConfig, context: NotificationContext, room: str | None,
+    ) -> list[dict[str, Any]]:
+        mapping = channel.data.get("audio_targets", {})
+        if self._policy_target_room(context):
+            matches = self._policy_room_matches(mapping, room or "")
+            return matches[0] if len(matches) == 1 and isinstance(matches[0], list) else []
+        return mapping.get(room, [])
+
+    def _policy_channel_rejection(
+        self, channel: ChannelConfig, context: NotificationContext, presence: PresenceSnapshot,
+    ) -> str | None:
+        """Enforce rule boundaries even for force, direct tests, and legacy bypass."""
+        if channel.channel_type in {"mobile_app", "telegram"}:
+            allowed_remote = self._config.presence.get("allowed_remote_channels")
+            if isinstance(allowed_remote, list) and channel.name not in allowed_remote:
+                return "remote_channel_not_allowed"
+            if self._config.presence.get("remote_channels_away_only") and not presence.absence_confirmed:
+                return "presence"
+        if self._config.presence.get("occupied_room_routing") and channel.channel_type in {"tts", "tts_hume", "tv"}:
+            room = normalize_room(channel.room) if channel.room else ""
+            if not room or room not in presence.occupied_rooms:
+                return "room_unoccupied"
+        if not self._has_rule_scope(context):
+            return None
+        local = channel.channel_type in {"tts", "tts_hume", "tv"}
+        if local and context.metadata.get("policy_text_only"):
+            return "policy_text_only"
+        if not self._channel_matches_audience(channel, context, presence):
+            return "user_filter"
+        if local and presence.nobody_home:
+            return "presence"
+        room = self._policy_target_room(context)
+        if not local or not room:
+            return None
+        if any(len(self._policy_room_matches(channel.data.get(key), room)) > 1
+               for key in ("room_targets", "audio_targets", "notify_services")):
+            return "policy_target_room"
+        if channel.channel_type == "tts_hume":
+            if channel.room is not None and normalize_room(channel.room) == room and (channel.entity_id or channel.data.get("media_player")):
+                return None
+            return "policy_target_room"
+        if channel.channel_type == "tts":
+            audio_targets = self._room_audio_targets(channel, context, room)
+            if audio_targets:
+                # A service without a concrete entity could target a speaker in
+                # another room. Room mappings must contain explicit devices.
+                return None if all(isinstance(target, dict) and target.get("entity_id") for target in audio_targets) else "policy_target_room"
+        if not self._resolve_tts_entity_id(channel, context, delivery_room=room):
+            return "policy_target_room"
+        if channel.channel_type == "tv" and not self._resolve_tv_service(channel, context, delivery_room=room):
+            return "policy_target_room"
+        return None
+
+    def _channel_matches_audience(
+        self, channel: ChannelConfig, context: NotificationContext, presence: PresenceSnapshot,
+    ) -> bool:
+        """Keep explicit/silent audience constraints distinct from observed presence."""
+        if self._should_bypass_channel_policy(context) and not self._has_rule_scope(context):
+            return True
+        constrained = bool(context.metadata.get("audience_resolved") or context.metadata.get("policy_users_explicit") or context.users or context.user)
+        allowed = {str(user).removeprefix("person.") for user in context.users}
+        if context.user and not context.metadata.get("policy_users_explicit"):
+            allowed.add(context.user.removeprefix("person."))
+        profiles = [item for item in context.context_data.get("users", []) if isinstance(item, dict)]
+        silent = {str(item.get("slug") or item.get("person_entity_id", "")).removeprefix("person.") for item in profiles if item.get("silent")}
+        allowed -= silent
+        if channel.user:
+            user = channel.user.removeprefix("person.")
+            if self._has_rule_scope(context) and channel.channel_type in {"tts", "tts_hume", "tv"}:
+                if user not in {person.removeprefix("person.") for person in presence.people_home}:
+                    return False
+            return user not in silent and (not constrained or user in allowed)
+        if channel.channel_type in {"tts", "tts_hume", "tv"} and constrained:
+            home = {user.removeprefix("person.") for user in presence.people_home}
+            return bool(allowed & home)
+        # An ownerless personal channel cannot safely satisfy an explicit audience.
+        if (channel.channel_type == "mobile_app" and context.metadata.get("audience_explicit")) or (
+            channel.channel_type in {"mobile_app", "telegram"} and context.metadata.get("policy_users_explicit")
+        ):
+            return False
+        return True
 
     def _channel_matches_presence_policy(
         self,
@@ -759,6 +1027,13 @@ class HeraldRouter:
             tokens.add(tail)
         return {item for item in tokens if item}
 
+    def _local_audience(self, context: NotificationContext, presence: PresenceSnapshot) -> list[str]:
+        """Prefer people actually listening locally for shared speech preferences."""
+        if context.metadata.get("audience_explicit"):
+            return list(context.users)
+        allowed = {user.removeprefix("person.") for user in context.users}
+        return [user for user in presence.people_home if not allowed or user.removeprefix("person.") in allowed] or list(context.users)
+
     def _resolve_language(
         self,
         user_key: str | None,
@@ -768,7 +1043,7 @@ class HeraldRouter:
         if user_key is not None:
             return self._controls.user_language(user_key, default="ru")
 
-        for user in list(context.users) + list(presence.people_home):
+        for user in self._local_audience(context, presence):
             slug = user.split(".", maxsplit=1)[1] if "." in user else user
             return self._controls.user_language(slug, default="ru")
         return "ru"
@@ -786,7 +1061,7 @@ class HeraldRouter:
             return context.personality
         if user_key is not None:
             return self._controls.user_character(user_key, default=flow.personality or DEFAULT_PERSONALITY)
-        for user in list(context.users) + list(presence.people_home):
+        for user in self._local_audience(context, presence):
             slug = user.split(".", maxsplit=1)[1] if "." in user else user
             return self._controls.user_character(slug, default=flow.personality or DEFAULT_PERSONALITY)
         return flow.personality or DEFAULT_PERSONALITY
@@ -826,6 +1101,8 @@ class HeraldRouter:
         context: NotificationContext,
         presence: PresenceSnapshot,
     ) -> str | None:
+        if policy_room := self._policy_target_room(context):
+            return policy_room
         explicit_room = self._normalize_room_preference(context.room)
         if explicit_room not in {None, "auto", "all"}:
             return explicit_room
@@ -843,6 +1120,14 @@ class HeraldRouter:
                     return self._normalize_room_preference(item.get("current_room"))
 
         return self._normalize_room_preference(presence.primary_room)
+
+    def _channel_delivery_room(
+        self, channel: ChannelConfig, user_key: str | None,
+        context: NotificationContext, presence: PresenceSnapshot,
+    ) -> str | None:
+        if self._config.presence.get("occupied_room_routing") and channel.room and channel.channel_type in {"tts", "tts_hume", "tv"}:
+            return normalize_room(channel.room)
+        return self._resolve_delivery_room(user_key, context, presence)
 
     def _channel_allowed_in_quiet_hours(self, channel: ChannelConfig) -> bool:
         """Evaluate the effective quiet-hours behavior for a channel."""
@@ -909,6 +1194,8 @@ class HeraldRouter:
             "enabled": channel.enabled,
             "min_level": channel.min_level,
         }
+        if reason := self._policy_channel_rejection(channel, context, presence):
+            return {**preview, "status": "dropped", "reason": reason}
         if (
             not self._should_bypass_channel_policy(context)
             and not severity_allowed(context.level, channel.min_level)
@@ -919,8 +1206,19 @@ class HeraldRouter:
                 "reason": "channel_min_level",
             }
 
+        if channel.channel_type == "tts_hume":
+            target = channel.entity_id or channel.data.get("media_player")
+            reason = None
+            if not str(channel.data.get("api_key", "")).strip():
+                reason = "hume_api_key_missing"
+            elif not target:
+                reason = "tts_target_missing"
+            return {**preview, "status": "error" if reason else "planned",
+                    "service": "media_player.play_media", "target_entity_id": target,
+                    "reason": reason}
+
         if channel.channel_type == "tts":
-            desired_room = delivery_room or self._normalize_room_preference(context.room)
+            desired_room = self._policy_target_room(context) or delivery_room or self._normalize_room_preference(context.room)
             audio_target = self._resolve_room_audio_target(
                 channel,
                 context,
@@ -937,7 +1235,7 @@ class HeraldRouter:
                     "target_kind": audio_target.get("kind"),
                     "requested_room": desired_room,
                 }
-            room_audio_targets = channel.data.get("audio_targets", {}).get(desired_room, [])
+            room_audio_targets = self._room_audio_targets(channel, context, desired_room)
             if isinstance(room_audio_targets, list) and room_audio_targets:
                 return {
                     **preview,
@@ -1041,6 +1339,8 @@ class HeraldRouter:
         delivery_room: str | None,
     ) -> dict[str, Any]:
         """Send one notification to a concrete channel."""
+        if reason := self._policy_channel_rejection(channel, context, presence):
+            return {"channel": channel.name, "status": "dropped", "reason": reason, "flow": flow.name}
         title_to_send = f"{channel.title_prefix} {title}".strip() if channel.title_prefix else title
         delivery_meta: dict[str, Any] = {}
         if (
@@ -1058,7 +1358,11 @@ class HeraldRouter:
                 "type": channel.channel_type,
                 "language": language,
             }
+        before_send = self._rule_transport_guard(context, flow, channel)
         try:
+            if channel.channel_type in {"mobile_app", "telegram"} and before_send is not None:
+                if reason := await before_send():
+                    return {"channel": channel.name, "status": "dropped", "reason": reason, "flow": flow.name}
             if channel.channel_type == "tts":
                 delivery_meta = await self._async_send_tts(
                     channel,
@@ -1066,6 +1370,7 @@ class HeraldRouter:
                     message,
                     context,
                     delivery_room=delivery_room,
+                    before_send=before_send,
                 )
             elif channel.channel_type == "tv":
                 delivery_meta = await self._async_send_tv(
@@ -1075,12 +1380,14 @@ class HeraldRouter:
                     context,
                     language=language,
                     delivery_room=delivery_room,
+                    before_send=before_send,
                 )
             elif channel.channel_type == "tts_hume":
                 delivery_meta = await self._hume_tts.async_deliver(
                     channel=channel,
                     text=message,
                     context=context,
+                    before_play=before_send,
                 )
             elif channel.channel_type == "mobile_app":
                 delivery_meta = await self._async_send_notify_service(
@@ -1177,80 +1484,66 @@ class HeraldRouter:
             **delivery_meta,
         }
 
+    @staticmethod
+    def _tts_service_data(data: dict[str, Any]) -> dict[str, Any]:
+        internal = {"audio_targets", "room_targets", "notify_services", "kind", "priority",
+                    "engine_entity_id", "active_only", "turn_on", "volume_level", "service", "room"}
+        return {key: value for key, value in data.items() if key not in internal}
+
     async def _async_send_tts(
-        self,
-        channel: ChannelConfig,
-        title: str,
-        message: str,
-        context: NotificationContext,
-        *,
-        delivery_room: str | None,
+        self, channel: ChannelConfig, title: str, message: str, context: NotificationContext,
+        *, delivery_room: str | None,
+        before_send: Callable[[], Awaitable[str | None]] | None = None,
     ) -> dict[str, Any]:
-        tts_options = dict(context.metadata.get("tts_options", {}))
-        desired_room = delivery_room or self._normalize_room_preference(context.room)
-        room_audio_targets = channel.data.get("audio_targets", {}).get(desired_room, [])
-        audio_target = self._resolve_room_audio_target(
-            channel,
-            context,
-            delivery_room=delivery_room,
-        )
-        if audio_target is not None:
-            target_service = str(audio_target.get("service") or channel.service or "tts.yandex_station_say")
-            target_entity_id = str(audio_target.get("entity_id") or "").strip() or None
-            if target_entity_id is None:
-                raise ValueError(f"Channel {channel.name} resolved an empty room audio target")
-            if target_service == "tts.speak":
-                return await self._async_send_media_tts_target(
-                    channel=channel,
-                    service=target_service,
-                    target_entity_id=target_entity_id,
-                    title=title,
-                    message=message,
-                    delivery_room=delivery_room,
-                    context=context,
-                    target_data=audio_target,
-                )
-            data = {**channel.data, "message": message}
-            data.pop("audio_targets", None)
-            if tts_options:
-                data.update(tts_options)
-            if target_entity_id is not None:
-                data["entity_id"] = target_entity_id
-            if title:
-                data.setdefault("cache", False)
-            await self._async_call_service(target_service, data)
-            return {
-                "service": target_service,
-                "target_entity_id": target_entity_id,
-                "requested_room": delivery_room or self._normalize_room_preference(context.room),
-                "target_kind": audio_target.get("kind"),
-            }
-
-        if isinstance(room_audio_targets, list) and room_audio_targets:
-            return {
-                "channel": channel.name,
-                "status": "dropped",
-                "reason": "room_audio_unavailable",
-                "requested_room": desired_room,
-                "type": channel.channel_type,
-            }
-
-        service = channel.service or "tts.yandex_station_say"
-        data = {**channel.data, "message": message}
-        data.pop("audio_targets", None)
-        if tts_options:
-            data.update(tts_options)
-        entity_id = self._resolve_tts_entity_id(channel, context, delivery_room=delivery_room)
-        if entity_id is not None:
-            data["entity_id"] = entity_id
-        if title:
-            data.setdefault("cache", False)
-        await self._async_call_service(service, data)
-        return {
-            "service": service,
-            "target_entity_id": entity_id,
-            "requested_room": delivery_room or self._normalize_room_preference(context.room),
-        }
+        desired_room = self._policy_target_room(context) or delivery_room or self._normalize_room_preference(context.room)
+        explicit = self._resolve_explicit_audio_target(channel, context)
+        raw_targets = self._room_audio_targets(channel, context, desired_room)
+        targets = ([explicit] if explicit is not None else [
+            target for target in self._ordered_room_audio_targets(desired_room or "", raw_targets)
+            if self._audio_target_is_available(target)
+        ])
+        if not targets and raw_targets:
+            return {"channel": channel.name, "status": "dropped", "reason": "room_audio_unavailable",
+                    "requested_room": desired_room, "type": channel.channel_type}
+        if not targets:
+            targets = [{"service": channel.service or "tts.yandex_station_say",
+                        "entity_id": self._resolve_tts_entity_id(channel, context, delivery_room=delivery_room)}]
+        attempted: list[str] = []
+        for index, target in enumerate(targets):
+            service = str(target.get("service") or channel.service or "tts.yandex_station_say")
+            entity_id = target.get("entity_id")
+            attempted.append(str(entity_id or service))
+            try:
+                if service == "tts.speak":
+                    if not isinstance(entity_id, str) or not entity_id:
+                        raise ValueError("tts.speak requires one media player target")
+                    result = await self._async_send_media_tts_target(
+                        channel=channel, service=service, target_entity_id=entity_id,
+                        title=title, message=message, delivery_room=delivery_room,
+                        context=context, target_data=target, before_send=before_send,
+                    )
+                else:
+                    data = self._tts_service_data({**channel.data, **target,
+                                                  **dict(context.metadata.get("tts_options", {}))})
+                    data["message"] = message
+                    if entity_id is not None:
+                        data["entity_id"] = entity_id
+                    if title:
+                        data.setdefault("cache", False)
+                    if before_send is not None and (reason := await before_send()):
+                        return {"channel": channel.name, "status": "dropped", "reason": reason, "flow": context.flow}
+                    await self._async_call_service(service, data)
+                    result = {"service": service, "target_entity_id": entity_id,
+                              "requested_room": desired_room, "target_kind": target.get("kind")}
+                return {**result, "attempted_targets": attempted}
+            except TimeoutError:
+                # Delivery may already have happened: do not duplicate speech on another device.
+                raise
+            except Exception:
+                if index + 1 == len(targets):
+                    raise
+                _LOGGER.warning("TTS target failed; trying the next configured target")
+        raise RuntimeError("No TTS delivery target")
 
     async def _async_send_tv(
         self,
@@ -1261,6 +1554,7 @@ class HeraldRouter:
         *,
         language: str,
         delivery_room: str | None,
+        before_send: Callable[[], Awaitable[str | None]] | None = None,
     ) -> dict[str, Any]:
         """Deliver a TV notification through overlay notify services when available."""
         target_entity_id = self._resolve_tts_entity_id(channel, context, delivery_room=delivery_room)
@@ -1294,6 +1588,8 @@ class HeraldRouter:
                 },
             }
             payload["data"].setdefault("interrupt", 0)
+            if before_send is not None and (reason := await before_send()):
+                return {"channel": channel.name, "status": "dropped", "reason": reason, "flow": context.flow}
             await self._async_call_service(service, payload)
             return {
                 "service": service,
@@ -1316,6 +1612,7 @@ class HeraldRouter:
                 "active_only": active_only,
                 "announce": bool(channel.data.get("announce", True)),
             },
+            before_send=before_send,
         )
 
     def _resolve_tts_entity_id(
@@ -1326,13 +1623,18 @@ class HeraldRouter:
         delivery_room: str | None,
     ) -> str | list[str] | None:
         """Resolve the target entity/group for a TTS channel."""
+        if policy_room := self._policy_target_room(context):
+            matches = self._policy_room_matches(channel.data.get("room_targets"), policy_room)
+            if matches:
+                return (matches[0] or None) if len(matches) == 1 else None
+            return channel.entity_id if channel.room is not None and normalize_room(channel.room) == policy_room else None
         metadata = dict(context.metadata)
         if target_group := str(metadata.get("legacy_target_group", "")).strip():
             return target_group
         if explicit_entity_id := self._resolve_explicit_channel_entity_id(channel, context):
             return explicit_entity_id
 
-        desired_room = delivery_room or self._normalize_room_preference(context.room)
+        desired_room = self._policy_target_room(context) or delivery_room or self._normalize_room_preference(context.room)
         if desired_room in {None, "auto", "all"}:
             return channel.entity_id
 
@@ -1352,10 +1654,10 @@ class HeraldRouter:
         explicit_target = self._resolve_explicit_audio_target(channel, context)
         if explicit_target is not None:
             return explicit_target
-        desired_room = delivery_room or self._normalize_room_preference(context.room)
+        desired_room = self._policy_target_room(context) or delivery_room or self._normalize_room_preference(context.room)
         if desired_room in {None, "auto", "all"}:
             return None
-        raw_targets = channel.data.get("audio_targets", {}).get(desired_room, [])
+        raw_targets = self._room_audio_targets(channel, context, desired_room)
         if not isinstance(raw_targets, list) or not raw_targets:
             return None
         ordered_targets = self._ordered_room_audio_targets(desired_room, raw_targets)
@@ -1370,6 +1672,8 @@ class HeraldRouter:
         context: NotificationContext,
     ) -> dict[str, Any] | None:
         """Return one concrete audio target when the request names a device explicitly."""
+        if self._policy_target_room(context):
+            return None
         device = str(context.device or "").strip().lower()
         if not device:
             return None
@@ -1414,6 +1718,15 @@ class HeraldRouter:
             for room_name, service_name in dict(channel.data.get("notify_services", {})).items()
             if str(service_name).strip()
         }
+        if policy_room := self._policy_target_room(context):
+            matches = self._policy_room_matches(notify_services, policy_room)
+            if matches:
+                return matches[0] if len(matches) == 1 else None
+            if channel.room is not None and normalize_room(channel.room) == policy_room:
+                return channel.service
+            # A notify service can be bound to a different TV independently of
+            # the entity mapping. Only a target-aware TTS service may inherit.
+            return channel.service if channel.service and not channel.service.startswith("notify.") else None
         if device:
             if str(channel.service or "").strip().lower() == device:
                 return str(channel.service).strip() or None
@@ -1423,7 +1736,7 @@ class HeraldRouter:
                     continue
                 return notify_services.get(str(room_name)) or channel.service
 
-        desired_room = delivery_room or self._normalize_room_preference(context.room)
+        desired_room = self._policy_target_room(context) or delivery_room or self._normalize_room_preference(context.room)
         if desired_room not in {None, "auto", "all"} and desired_room in notify_services:
             return notify_services[desired_room]
         return channel.service
@@ -1472,6 +1785,7 @@ class HeraldRouter:
         delivery_room: str | None,
         context: NotificationContext,
         target_data: dict[str, Any],
+        before_send: Callable[[], Awaitable[str | None]] | None = None,
     ) -> dict[str, Any]:
         """Deliver TTS through a media player target such as HomePod or TV."""
         merged_data = {**channel.data, **target_data}
@@ -1505,6 +1819,8 @@ class HeraldRouter:
         spoken_message = message
         if title and title.strip() and title.strip().lower() not in message.strip().lower():
             spoken_message = f"{title}. {message}"
+        if before_send is not None and (reason := await before_send()):
+            return {"channel": channel.name, "status": "dropped", "reason": reason, "flow": context.flow}
         if service == "tts.speak":
             tts_entity_id = str(merged_data.get("engine_entity_id", "")).strip()
             if not tts_entity_id:
@@ -1535,9 +1851,7 @@ class HeraldRouter:
             "message": spoken_message,
             "title": title,
         }
-        for key in ("audio_targets", "kind", "priority", "engine_entity_id", "active_only"):
-            data.pop(key, None)
-        await self._async_call_service(service, data)
+        await self._async_call_service(service, self._tts_service_data(data))
         return {
             "service": service,
             "target_entity_id": target_entity_id,
@@ -1730,6 +2044,15 @@ class HeraldRouter:
         language: str,
     ) -> dict[str, Any]:
         service = channel.service or "telegram_bot.send_message"
+        if service == "notify.send_message":
+            if not channel.entity_id:
+                raise ValueError(f"Channel {channel.name} requires a notify entity target")
+            await self._async_call_service(service, {
+                "entity_id": channel.entity_id,
+                "title": title,
+                "message": message,
+            })
+            return {"service": service, "target_entity_id": channel.entity_id}
         payload = {
             **channel.data,
             "title": title,
@@ -1785,4 +2108,7 @@ class HeraldRouter:
         if "." not in service_name:
             raise ValueError(f"Invalid service name: {service_name}")
         domain, service = service_name.split(".", maxsplit=1)
-        await self._hass.services.async_call(domain, service, data, blocking=True)
+        await asyncio.wait_for(
+            self._hass.services.async_call(domain, service, data, blocking=True),
+            timeout=_SERVICE_CALL_TIMEOUT_SECONDS,
+        )

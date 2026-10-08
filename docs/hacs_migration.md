@@ -1,7 +1,11 @@
-# HACS Migration
+# HACS migration
 
-1. Publish `distrib/herald/` as its own repository.
-2. Install it in HACS as a custom repository.
-3. Restart Home Assistant and confirm the config entry loads.
-4. Confirm the runtime entities and controls appear.
-5. Remove any local `custom_components/herald` override only after the HACS package is verified.
+The repository already uses the custom-integration layout
+`custom_components/herald/`. Add it as a HACS custom repository of type Integration,
+install, restart Home Assistant, then add or reload the config entry.
+
+For an existing manual installation, preserve configuration and a backup of the
+installed component first. Verify HACS installed the intended version and the
+frontend assets before removing any separate manual deployment process. Do not
+remove the active `custom_components/herald/` directory after HACS has installed it.
+Default HACS catalog inclusion is a separate publication step.

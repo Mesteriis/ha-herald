@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+import tempfile
 from copy import deepcopy
+from dataclasses import replace
 from datetime import timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -19,15 +23,18 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
+from . import _merge_config
 from .actions import ensure_notification_id, parse_action_token
 from .ai import HeraldAIClient
 from .characters import CharacterManager
+from .configuration_check import build_configuration_report
 from .const import (
     CONF_COOLDOWN,
     CONF_DEDUP_WINDOW,
     CONF_MAINTENANCE_MIN_LEVEL,
     CONF_MAINTENANCE_MODE_ENTITY,
     DATA_FRONTEND_REGISTRATION,
+    DATA_YAML_CONFIG,
     DEFAULT_DASHBOARD_PRESET,
     DEFAULT_MAINTENANCE_MIN_LEVEL,
     DEFAULT_PERSONALITY,
@@ -46,6 +53,7 @@ from .const import (
     topology_signal,
 )
 from .context_builder import HeraldContextBuilder
+from .control_entities import resolve_control_entities
 from .controls import (
     HeraldControlManager,
     dashboard_sidebar_control_key,
@@ -55,21 +63,24 @@ from .controls import (
     room_presence_entity_id,
     room_presence_sensor_entity_id,
 )
-from .discovery import discover_runtime_channels
+from .decisions import explain_outcome, explain_route
+from .discovery import async_discover_runtime_channels
 from .flows import async_flow_matches, resolve_requested_flow, severity_rank
-from .models import ChannelConfig, FlowConfig, HeraldConfig, NotificationContext, RuntimeState
+from .models import ChannelConfig, FlowConfig, HeraldConfig, NotificationContext, PresenceSnapshot, RuntimeState
 from .notification_policies import (
+    POLICY_MODE_INHERIT,
     NotificationPolicyManager,
     NotificationPolicyOverride,
-    POLICY_MODE_CUSTOM,
-    POLICY_MODE_DISABLED,
-    POLICY_MODE_INHERIT,
+    snapshot_registry_states,
 )
 from .plugins import HeraldPluginManager
+from .policy_editor import build_preview_request, merge_policy
+from .policy_rules import apply_rule, has_rule_constraints
 from .presence import PresenceResolver
 from .queue import NotificationQueueManager
 from .request import HeraldRequest
 from .router import HeraldRouter
+from .rule_options import rule_options
 from .translations import action_feedback_text, normalize_language, runtime_control_change_text
 
 _LOGGER = logging.getLogger(__name__)
@@ -86,7 +97,7 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         entry: ConfigEntry,
         raw_config: dict[str, Any],
     ) -> None:
-        super().__init__(hass, _LOGGER, name=f"{DOMAIN}_{entry.entry_id}")
+        super().__init__(hass, _LOGGER, name=f"{DOMAIN}_{entry.entry_id}", config_entry=entry)
         self.entry = entry
         self._raw_config = deepcopy(raw_config)
         self.config = HeraldConfig.from_raw(self._raw_config)
@@ -117,6 +128,10 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.presence,
             self.characters,
             lambda: self._state,
+            config_layers_getter=lambda: {
+                "yaml": self.hass.data.get(DOMAIN, {}).get(DATA_YAML_CONFIG, {}),
+                "entry": self.entry.data, "options": self.entry.options,
+            },
         )
         self.presence.attach_controls(self.controls)
         self.context_builder = HeraldContextBuilder(hass, self.config, self.presence, self.controls)
@@ -128,6 +143,7 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.presence,
             self.controls,
             self._record_dashboard_delivery,
+            rule_checker=self._check_notification_rule,
         )
         self.queue = NotificationQueueManager(self)
         self._event_unsubs: list[Any] = []
@@ -147,18 +163,25 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._notification_registry_refreshed_at = stored_registry.get("refreshed_at")
         if stored_policies := await self._notification_policies_store.async_load():
             self._notification_policy_overrides = dict(stored_policies.get("items", {}))
+        await self.router.async_setup()
         queue_state_reset = self._reset_queue_runtime_state()
         self._reset_daily_counters_if_needed()
         await self._async_refresh_runtime_sources()
-        self._augment_runtime_config()
+        await self._async_augment_runtime_config()
         if self._sync_controls() or queue_state_reset:
             await self._store.async_save(self._state.to_dict())
         self._register_event_listeners()
 
+    async def async_apply_option_control_updates(self, options: dict[str, Any]) -> None:
+        """Persist edited Options values before reloading the config entry."""
+        if self.controls.apply_option_updates(options):
+            self.controls.sync_runtime_config()
+            await self._store.async_save(self._state.to_dict())
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Return the coordinator snapshot consumed by sensors."""
         await self._async_refresh_runtime_sources()
-        self._augment_runtime_config()
+        await self._async_augment_runtime_config()
         if self._sync_controls():
             await self._store.async_save(self._state.to_dict())
         presence = await self.presence.async_resolve(
@@ -182,6 +205,10 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     ) -> tuple[HeraldRequest, Any, str, FlowConfig, NotificationContext]:
         """Build the normalized request, runtime context, flow, and notification context."""
         request = HeraldRequest.from_service_data(data)
+        if request.metadata.get("legacy_mobile_channels"):
+            request.legacy_channels.extend(
+                name for name, channel in self.config.channels.items() if channel.channel_type == "mobile_app"
+            )
         runtime_context = await self.context_builder.async_build(request)
         level = request.level
         requested_flow = request.legacy_flow
@@ -189,12 +216,16 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         flow = self.config.flows[flow_name]
 
         now_iso = dt_util.now().isoformat()
-        audience_users = request.legacy_users or [
-            user.person_entity_id
-            for user in runtime_context.users
-            if user.home and not user.silent
-        ]
-        resolved_user = request.legacy_user or (audience_users[0] if audience_users else None)
+        audience_explicit = "users" in data or "user" in data
+        audience_users = (
+            list(dict.fromkeys(request.legacy_users + ([request.legacy_user] if request.legacy_user else [])))
+            if audience_explicit else [
+                user.person_entity_id for user in runtime_context.users if not user.silent
+            ]
+        )
+        local_users = [user.person_entity_id for user in runtime_context.users if user.home and not user.silent]
+        preferred_users = audience_users if audience_explicit else local_users
+        resolved_user = request.legacy_user or (preferred_users[0] if preferred_users else None)
         resolved_room = request.legacy_room or (
             runtime_context.room_for_user(resolved_user)
             if resolved_user and len(audience_users) <= 1
@@ -223,7 +254,13 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             entities=list(request.entities or []),
             context_data=context_payload,
             ai_context=ai_context,
-            metadata=dict(request.metadata),
+            metadata={
+                **request.metadata,
+                "audience_explicit": audience_explicit,
+                "audience_resolved": bool(runtime_context.users) or audience_explicit,
+                "channels_explicit": "channels" in data or bool(request.legacy_channels),
+                "room_explicit": "room" in data,
+            },
             character=request.ai.character if request.ai else None,
             personality=request.ai.character if request.ai else None,
             group=request.group,
@@ -241,7 +278,7 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_handle_service_notify(self, data: dict[str, Any]) -> None:
         """Handle the herald.notify service."""
         await self._async_refresh_runtime_sources()
-        self._augment_runtime_config()
+        await self._async_augment_runtime_config()
         self._sync_controls()
         request, runtime_context, flow_name, flow, context = await self._async_prepare_service_context(data)
         level = request.level
@@ -271,169 +308,16 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "level": level,
             }
         )
-        if self._maintenance_mode_active():
-            self._apply_maintenance_routing(context)
-            self._append_trace(
-                {
-                    "stage": "maintenance_redirect",
-                    "event": request.event,
-                    "flow": flow_name,
-                    "level": level,
-                    "channels": list(context.channels),
-                    "notification_id": context.notification_id,
-                }
-            )
-        policy_key = str(
-            request.metadata.get("notification_key")
-            or request.event
-            or context.metadata.get("notification_key")
-            or ""
-        ).strip()
-        if policy_key:
-            policy_action = self._apply_notification_policy(policy_key, context)
-            if policy_action == "drop":
-                self._record_drop_metric(
-                    reason="notification_policy_disabled",
-                    flow=context.flow,
-                    level=context.level,
-                )
-                self._append_trace(
-                    {
-                        "stage": "drop",
-                        "reason": "notification_policy_disabled",
-                        "flow": context.flow,
-                        "level": context.level,
-                        "notification_key": policy_key,
-                    }
-                )
-                await self._async_persist_and_publish()
-                return
-            level = context.level
-        if not request.force and not self._level_enabled(level):
-            self._record_drop_metric(
-                reason="level_disabled",
-                flow=flow_name,
-                level=level,
-            )
-            self._append_trace(
-                {
-                    "stage": "drop",
-                    "reason": "level_disabled",
-                    "flow": flow_name,
-                    "level": level,
-                    "message": request.message,
-                }
-            )
+        prechecks = await self._async_routing_prechecks(context, flow, remember_dedup=True)
+        if reason := prechecks["blocked_reason"]:
+            self._record_drop_metric(reason=reason, flow=flow_name, level=context.level)
+            self._record_decision(context, explain_outcome("dropped", reason=reason))
+            self._append_trace({
+                "stage": "drop", "reason": reason, "flow": flow_name,
+                "level": context.level, "notification_key": context.metadata.get("notification_key"),
+            })
             await self._async_persist_and_publish()
             return
-        if not self.is_flow_enabled(flow_name) and not request.force:
-            self._record_drop_metric(
-                reason="flow_disabled",
-                flow=flow_name,
-                level=level,
-            )
-            self._append_trace(
-                {
-                    "stage": "drop",
-                    "reason": "flow_disabled",
-                    "flow": flow_name,
-                    "level": level,
-                    "message": request.message,
-                }
-            )
-            await self._async_persist_and_publish()
-            return
-        self._append_trace(
-            {
-                "stage": "ai_decision",
-                "event": context.event,
-                "flow": flow_name,
-                "level": level,
-                "character": context.character or DEFAULT_PERSONALITY,
-                "ai_enabled": self.ai_client.should_use_ai(level),
-            }
-        )
-
-        matches = await async_flow_matches(
-            self.hass,
-            flow,
-            context,
-            home_mode_entity=self.config.presence.get("home_mode_entity"),
-        )
-        if not matches and not context.force:
-            self._record_drop_metric(
-                reason="conditions_not_met",
-                flow=flow_name,
-                level=context.level,
-            )
-            self._append_trace(
-                {
-                    "stage": "drop",
-                    "reason": "conditions_not_met",
-                    "flow": flow_name,
-                    "level": level,
-                    "message": context.message,
-                }
-            )
-            await self._async_persist_and_publish()
-            return
-
-        if not context.force and self._drop_for_mute_all(context):
-            self._record_drop_metric(
-                reason="mute_all",
-                flow=flow_name,
-                level=context.level,
-            )
-            self._append_trace(
-                {
-                    "stage": "drop",
-                    "reason": "mute_all",
-                    "flow": flow_name,
-                    "level": context.level,
-                    "message": context.message,
-                }
-            )
-            await self._async_persist_and_publish()
-            return
-
-        if not context.force and self._drop_for_dedup(flow, context):
-            self._record_drop_metric(
-                reason="deduplicated",
-                flow=flow_name,
-                level=context.level,
-            )
-            self._append_trace(
-                {
-                    "stage": "drop",
-                    "reason": "deduplicated",
-                    "flow": flow_name,
-                    "level": context.level,
-                    "message": context.message,
-                    "window_seconds": flow.dedup_window_seconds,
-                }
-            )
-            await self._async_persist_and_publish()
-            return
-
-        if not context.force and self._drop_for_cooldown(flow_name, flow):
-            self._record_drop_metric(
-                reason="flow_cooldown",
-                flow=flow_name,
-                level=context.level,
-            )
-            self._append_trace(
-                {
-                    "stage": "drop",
-                    "reason": "flow_cooldown",
-                    "flow": flow_name,
-                    "level": context.level,
-                    "message": context.message,
-                    "cooldown_seconds": flow.cooldown_seconds,
-                }
-            )
-            await self._async_persist_and_publish()
-            return
-
         self._append_trace(
             {
                 "stage": "queue",
@@ -459,6 +343,7 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "channels": context.channels,
             }
         )
+        self._record_decision(context, explain_outcome("queued", channels=list(context.channels)))
         await self.queue.async_enqueue(
             context,
             summary_window_seconds=(
@@ -466,6 +351,65 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ),
         )
         await self._async_persist_and_publish()
+
+    async def _async_routing_prechecks(
+        self, context: NotificationContext, flow: FlowConfig, *, remember_dedup: bool = False,
+        policy_overrides: dict[str, dict[str, Any]] | None = None,
+        presence: PresenceSnapshot | None = None,
+    ) -> dict[str, Any]:
+        """Share policy and admission checks between preview and real delivery."""
+        policy_key = str(context.metadata.get("notification_key") or context.event or "").strip()
+        policy_disabled = bool(policy_key and self._apply_notification_policy(policy_key, context, overrides=policy_overrides) == "drop")
+        if presence is None:
+            presence = await self.presence.async_resolve(context)
+        rule_blocked = self._check_notification_rule(context, presence)
+        maintenance = self._maintenance_mode_active()
+        if maintenance:
+            self._apply_maintenance_routing(context)
+        conditions_match = await async_flow_matches(
+            self.hass, flow, context, home_mode_entity=self.config.presence.get("home_mode_entity"),
+        )
+        level_enabled = self._level_enabled(context.level)
+        flow_enabled = self.is_flow_enabled(context.flow, prune_expired=remember_dedup)
+        mute_all_drop = self._drop_for_mute_all(context)
+        blocked = "notification_policy_disabled" if policy_disabled else rule_blocked
+        if blocked is None and not context.force:
+            for reason, drop in (
+                ("level_disabled", not level_enabled),
+                ("flow_disabled", not flow_enabled),
+                ("conditions_not_met", not conditions_match),
+                ("mute_all", mute_all_drop),
+                ("flow_cooldown", self._drop_for_cooldown(context.flow, flow, context)),
+                ("deduplicated", self._drop_for_dedup(flow, context, remember=False)),
+            ):
+                if drop:
+                    blocked = reason
+                    break
+        if blocked is None and remember_dedup and not context.force:
+            self._drop_for_dedup(flow, context, remember=True)
+        return {
+            "level_enabled": level_enabled, "flow_enabled": flow_enabled,
+            "conditions_match": conditions_match, "maintenance_redirect": maintenance,
+            "mute_all_drop": mute_all_drop, "blocked_reason": blocked,
+            "notification_rule_matches": rule_blocked is None,
+        }
+
+    def _check_notification_rule(self, context: NotificationContext, presence: PresenceSnapshot) -> str | None:
+        """Recheck captured rule constraints without reserving dedup or applying cooldown again."""
+        policy = context.metadata.get("notification_policy") or {}
+        if not has_rule_constraints(policy):
+            return None
+        options = rule_options(self.hass, self.config, self.presence)
+        # User silence can change while a notification waits in the queue or for AI,
+        # including when the new rule inherits its recipient list.
+        context.users = [user for user in context.users if not self.controls.user_silent(user.removeprefix("person."))]
+        if context.user and self.controls.user_silent(context.user.removeprefix("person.")):
+            context.user = context.users[0] if context.users else None
+        return apply_rule(
+            context, policy, presence,
+            known_users=[item["value"] for item in options["user_options"]],
+            known_rooms=[item["value"] for item in options["room_options"]],
+        )
 
     async def async_process_notifications(
         self,
@@ -475,6 +419,24 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not notifications:
             return
 
+        eligible: list[NotificationContext] = []
+        for context in notifications:
+            if not has_rule_constraints(context.metadata.get("notification_policy") or {}):
+                eligible.append(context)
+                continue
+            presence = await self.presence.async_resolve(context)
+            if reason := self._check_notification_rule(context, presence):
+                self._record_drop_metric(reason=reason, flow=context.flow, level=context.level)
+                self._record_decision(context, explain_outcome("dropped", reason=reason))
+                self._append_trace({"stage": "queue_rule_drop", "reason": reason,
+                                    "notification_key": context.metadata.get("notification_key") or context.event})
+            else:
+                eligible.append(context)
+        if len(eligible) != len(notifications):
+            await self._async_persist_and_publish()
+        if not eligible:
+            return
+        notifications = eligible
         flow = self.config.flows[notifications[0].flow]
         if self._should_summarize(flow, notifications):
             summary_context = await self._async_build_summary_context(flow, notifications)
@@ -483,7 +445,7 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         for context in notifications:
-            results = await self.router.async_route(context, flow)
+            results = await self.router.async_route(context, self.config.flows[context.flow])
             self._record_delivery(context, results, grouped_count=1)
 
     async def async_generate_dashboard(
@@ -499,8 +461,9 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             allow_unicode=True,
             sort_keys=False,
         )
-        destination = self.hass.config.path(path)
-        await self.hass.async_add_executor_job(self._write_text_file, destination, content)
+        destination = await self.hass.async_add_executor_job(
+            self._write_dashboard_file, self.hass.config.path(""), path, content,
+        )
         self._append_trace(
             {
                 "stage": "dashboard",
@@ -551,6 +514,10 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "source": source,
             "timestamp": stamp,
         }
+        self._state.acknowledged_notifications = dict(
+            sorted(self._state.acknowledged_notifications.items(),
+                   key=lambda item: str(item[1].get("timestamp", "")))[-2048:]
+        )
         if self._state.last_notification.get("notification_id") == notification_id:
             self._state.last_notification["acknowledged"] = True
             self._state.last_notification["acknowledged_at"] = stamp
@@ -642,7 +609,10 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return self.notification_registry_snapshot()
 
         try:
-            registry = self.notification_policies.scan(channels=self.config.channels, hass=self.hass)
+            states = snapshot_registry_states(self.hass)
+            registry = await self.hass.async_add_executor_job(
+                partial(self.notification_policies.scan, channels=dict(self.config.channels), states=states)
+            )
         except Exception as err:  # noqa: BLE001
             _LOGGER.exception("Notification registry refresh failed: %s", err)
             self._append_trace(
@@ -681,7 +651,13 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             overrides=self._notification_policy_overrides,
             channels=self.config.channels,
         )
+        options = rule_options(self.hass, self.config, self.presence)
+        for item in effective:
+            item["last_decision"] = self._state.last_decisions.get(item["notification_key"])
+            item["available_users"] = options["user_options"]
+            item["available_rooms"] = options["room_options"]
         return {
+            **options,
             "refreshed_at": self._notification_registry_refreshed_at,
             "count": len(effective),
             "families": sorted(
@@ -692,6 +668,7 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 }
             ),
             "channel_options": sorted(self.config.channels),
+            "scan_issues": list(self.notification_policies.scan_issues),
             "items": effective,
         }
 
@@ -704,8 +681,8 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         custom_count = sum(
             1
             for item in items
-            if str(item.get("effective", {}).get("delivery_mode") or POLICY_MODE_INHERIT)
-            != POLICY_MODE_INHERIT
+            if str(item.get("effective", {}).get("delivery_mode") or POLICY_MODE_INHERIT) != POLICY_MODE_INHERIT
+            or has_rule_constraints(item.get("policy", {}))
         )
         active_count = sum(1 for item in items if bool(item.get("active")))
         return {
@@ -727,6 +704,7 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             channels=self.config.channels,
             inherited_channels=list(entry.get("default_channels") or []),
         )
+        options = rule_options(self.hass, self.config, self.presence)
         return {
             **entry,
             "notification_key": notification_key,
@@ -735,6 +713,8 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ).to_dict(),
             "effective": effective,
             "available_channels": sorted(self.config.channels),
+            "available_users": options["user_options"],
+            "available_rooms": options["room_options"],
         }
 
     async def async_set_notification_policy(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -747,36 +727,7 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if notification_key not in self._notification_registry:
             raise ValueError(f"Unknown notification_key: {notification_key}")
 
-        current = NotificationPolicyOverride.from_dict(
-            self._notification_policy_overrides.get(notification_key)
-        )
-        if "enabled" in payload:
-            current.enabled = bool(payload.get("enabled"))
-        if "delivery_mode" in payload:
-            requested_mode = str(payload.get("delivery_mode") or POLICY_MODE_INHERIT).strip().lower()
-            current.delivery_mode = (
-                requested_mode
-                if requested_mode in {POLICY_MODE_INHERIT, POLICY_MODE_DISABLED, POLICY_MODE_CUSTOM, "text_only", "voice_only", "push_only"}
-                else POLICY_MODE_INHERIT
-            )
-        if "channels" in payload:
-            current.channels = [
-                channel
-                for channel in (
-                    str(item).strip()
-                    for item in (payload.get("channels") if isinstance(payload.get("channels"), list) else str(payload.get("channels") or "").split(","))
-                )
-                if channel and channel in self.config.channels
-            ]
-        if "level_override" in payload:
-            raw_level = str(payload.get("level_override") or "").strip().lower()
-            current.level_override = raw_level or None
-        if "cooldown_override" in payload:
-            value = payload.get("cooldown_override")
-            current.cooldown_override = None if value in (None, "", "none", "null") else int(value)
-        if "notes" in payload:
-            text = str(payload.get("notes") or "").strip()
-            current.notes = text or None
+        current = merge_policy(self._notification_policy_overrides.get(notification_key), payload, self.config.channels)
         current.updated_at = dt_util.now().isoformat()
 
         self._notification_policy_overrides[notification_key] = current.to_dict()
@@ -812,8 +763,10 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "characters": self.characters.list_character_keys(),
             "plugins": self.plugins.diagnostic_summary(),
             "control_entities": self._control_summary(),
+            "control_entity_ids": resolve_control_entities(self.hass, self.entry.entry_id, self.controls),
             "helper_bootstrap": self._control_summary(),
             "control_values": dict(self._state.control_values),
+            "effective_settings": self.controls.effective_settings(),
             "room_presence_sensors": {
                 room_name: room_presence_sensor_entity_id(room_name)
                 for room_name in sorted(self.presence.room_sensors())
@@ -824,8 +777,10 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "recent_notifications": list(self._state.recent_notifications),
             "dashboard_feed": list(self._state.dashboard_feed),
             "queued_notifications": list(self._state.queued_notifications),
+            "queue_diagnostics": self.queue.diagnostic_snapshot(),
             "topology": dict((self.data or {}).get("topology", {})),
             "last_route_preview": dict(self._state.last_route_preview),
+            "last_decisions": dict(self._state.last_decisions),
             "notification_registry": self.notification_registry_snapshot(),
             "notification_policies": dict(self._notification_policy_overrides),
             "analytics": {
@@ -840,70 +795,88 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             },
         }
 
-    async def async_preview_route(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Return an explainable dry-run of Herald routing without delivering anything."""
-        await self._async_refresh_runtime_sources()
-        self._augment_runtime_config()
-        self._sync_controls()
+    async def async_preview_notification_policy(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Preview a saved rule or a draft without saving, queuing, sending or calling AI."""
+        key = str(data["notification_key"]).strip()
+        if key not in self._notification_registry:
+            raise ValueError(f"Unknown notification_key: {key}")
+        entry = {**self._notification_registry[key], "notification_key": key}
+        request_data, warnings = build_preview_request(entry, data.get("message"))
+        policy = merge_policy(self._notification_policy_overrides.get(key), data.get("policy", {}), self.config.channels)
+        preview = await self._async_build_route_preview(
+            request_data, policy_overrides={key: policy.to_dict()},
+            scenario=data.get("scenario", "current"), warnings=warnings,
+        )
+        preview.update({"notification_key": key, "draft": "policy" in data})
+        return preview
+
+    async def _async_build_route_preview(
+        self, data: dict[str, Any], *, policy_overrides: dict[str, dict[str, Any]] | None = None,
+        scenario: str = "current", warnings: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Build one disposable plan with the same checks used for real admission."""
+        if scenario not in {"current", "quiet_hours", "away"}:
+            raise ValueError("Unknown preview scenario")
         request, runtime_context, flow_name, flow, context = await self._async_prepare_service_context(data)
         presence = await self.presence.async_resolve(context)
-        maintenance_redirect = self._maintenance_mode_active()
-        if maintenance_redirect:
-            self._apply_maintenance_routing(context)
-        conditions_match = await async_flow_matches(
-            self.hass,
-            flow,
-            context,
-            home_mode_entity=self.config.presence.get("home_mode_entity"),
-        )
-        level_enabled = self._level_enabled(context.level)
-        flow_enabled = self.is_flow_enabled(flow_name)
-        mute_all_drop = self._drop_for_mute_all(context)
-
-        blocked_reason: str | None = None
-        if not request.force and not level_enabled:
-            blocked_reason = "level_disabled"
-        elif not request.force and not flow_enabled:
-            blocked_reason = "flow_disabled"
-        elif not request.force and not conditions_match:
-            blocked_reason = "conditions_not_met"
-        elif not request.force and mute_all_drop:
-            blocked_reason = "mute_all"
-
+        warnings = list(warnings or [])
+        if scenario == "quiet_hours":
+            presence = replace(presence, quiet_hours=True)
+            runtime_context = replace(runtime_context, quiet_hours=True)
+            warnings.append("Включены только тихие часы маршрутизатора; время, состояния сущностей и условия потока остаются текущими.")
+        elif scenario == "away":
+            presence = replace(presence, people_home=[], nobody_home=True, absence_confirmed=True, home_mode="away", occupied_rooms=[], primary_room=None)
+            runtime_context = replace(runtime_context, people_home=[], device_trackers_home=[], home_mode="away", occupied_rooms=[], primary_room=None,
+                                      users=[replace(user, home=False, current_room=None) for user in runtime_context.users])
+            # No implicit local recipient/room survives the simulated absence.
+            context.room = request.legacy_room
+            context.user = request.legacy_user
+            warnings.append("В маршрутизаторе никого нет дома; реальные сущности и условия потока остаются текущими.")
+        context.context_data.update(runtime_context.to_dict())
+        prechecks = await self._async_routing_prechecks(context, flow, policy_overrides=policy_overrides, presence=presence)
         preview = self.router.build_route_preview(context, flow, presence)
-        preview.update(
-            {
-                "entry_id": self.entry.entry_id,
-                "flow": {
-                    "requested": request.legacy_flow,
-                    "resolved": flow_name,
-                    "configured": flow.name,
-                },
-                "runtime_context": runtime_context.to_dict(),
-                "prechecks": {
-                    "level_enabled": level_enabled,
-                    "flow_enabled": flow_enabled,
-                    "conditions_match": conditions_match,
-                    "maintenance_redirect": maintenance_redirect,
-                    "mute_all_drop": mute_all_drop,
-                    "blocked_reason": blocked_reason,
-                    "will_deliver": blocked_reason is None and bool(preview.get("deliveries")),
-                },
-            }
-        )
+        preview.update({
+            "entry_id": self.entry.entry_id,
+            "flow": {"requested": request.legacy_flow, "resolved": flow_name, "configured": flow.name},
+            "runtime_context": runtime_context.to_dict(), "policy": context.metadata.get("notification_policy", {}),
+            "scenario": scenario, "warnings": warnings,
+            "prechecks": {**prechecks, "will_deliver": prechecks["blocked_reason"] is None and any(
+                item.get("status") == "planned" for item in preview.get("deliveries", [])
+            )},
+        })
+        if hasattr(self.controls, "effective_settings"):
+            settings = self.controls.effective_settings()
+            relevant = {f"{prefix}:{flow_name}" for prefix in ("flow_enabled", "flow_cooldown", "flow_dedup_window", "flow_summary_window")}
+            relevant.add("maintenance_min_level")
+            candidates = set(preview["requested"]["channels"]) | set(preview["resolved"]["final_channels"])
+            candidates.update(item["channel"] for item in preview.get("channel_decisions", []) if item.get("channel"))
+            for channel in candidates:
+                relevant.update({f"channel_enabled:{channel}", f"channel_min_level:{channel}"})
+            preview["effective_settings"] = {key: value for key, value in settings.items() if key in relevant}
+        preview["explanation"] = explain_route(preview)
+        return preview
+
+    async def async_preview_route(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Return and retain an explainable dry-run without delivering anything."""
+        await self._async_refresh_runtime_sources()
+        await self._async_augment_runtime_config()
+        self._sync_controls()
+        preview = await self._async_build_route_preview(data)
         self._state.last_route_preview = preview
-        self._append_trace(
-            {
-                "stage": "route_preview",
-                "event": context.event,
-                "flow": flow_name,
-                "level": context.level,
-                "blocked_reason": blocked_reason,
-                "channels": list(preview.get("resolved", {}).get("final_channels", [])),
-            }
-        )
+        self._append_trace({"stage": "route_preview", "event": preview["requested"]["event"],
+                            "flow": preview["flow"]["resolved"], "level": preview["requested"]["level"],
+                            "blocked_reason": preview["prechecks"]["blocked_reason"],
+                            "channels": list(preview.get("resolved", {}).get("final_channels", []))})
         await self._async_persist_and_publish()
         return preview
+
+    def _record_decision(self, context: NotificationContext, explanation: dict[str, Any]) -> None:
+        """Keep bounded per-event outcomes, including events rejected before routing."""
+        decision = {**explanation, "at": dt_util.now().isoformat(), "flow": context.flow, "level": context.level}
+        for key in context.metadata.get("notification_keys") or [context.metadata.get("notification_key") or context.event]:
+            if key:
+                self._state.last_decisions[str(key)] = decision
+        self._state.last_decisions = dict(sorted(self._state.last_decisions.items(), key=lambda item: item[1]["at"])[-256:])
 
     def async_set_queue_state(self, items: list[dict[str, Any]]) -> None:
         """Update queued-notification diagnostics and publish them immediately."""
@@ -935,13 +908,13 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.async_set_updated_data(payload)
 
-    def is_flow_enabled(self, flow_name: str) -> bool:
+    def is_flow_enabled(self, flow_name: str, *, prune_expired: bool = True) -> bool:
         """Return the effective enabled state for a flow."""
         if snoozed_until := self._state.snoozed_flows.get(flow_name):
             until = dt_util.parse_datetime(snoozed_until)
             if until is not None and until > dt_util.now():
                 return False
-            if until is not None and until <= dt_util.now():
+            if prune_expired and until is not None and until <= dt_util.now():
                 self._state.snoozed_flows.pop(flow_name, None)
         if flow_name in self._state.flow_overrides:
             return self._state.flow_overrides[flow_name]
@@ -1069,8 +1042,14 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._notification_registry_tick_unsub is not None:
             self._notification_registry_tick_unsub()
             self._notification_registry_tick_unsub = None
-        await self.queue.async_flush_now()
-        await self._store.async_save(self._state.to_dict())
+        try:
+            await self.queue.async_shutdown()
+        finally:
+            try:
+                await self.router.async_shutdown()
+                await self._store.async_save(self._state.to_dict())
+            finally:
+                await super().async_shutdown()
 
     async def _async_refresh_runtime_sources(self) -> None:
         """Refresh filesystem-backed topology inputs before routing or snapshots."""
@@ -1080,7 +1059,7 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _should_summarize(self, flow, notifications: list[NotificationContext]) -> bool:
         """Decide whether a queue group should be summarized."""
-        if len(notifications) <= 1 or not flow.allow_summary:
+        if len(notifications) <= 1 or not flow.allow_summary or not all(item.summarize for item in notifications):
             return False
         highest = max(severity_rank(item.level) for item in notifications)
         return highest < severity_rank("critical")
@@ -1098,9 +1077,11 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             or DEFAULT_PERSONALITY
         )
         now_iso = dt_util.now().isoformat()
+        first = notifications[0]
+        presence = await self.presence.async_resolve(first)
         summary_payload = await self.ai_client.async_summarize_notifications(
             notifications,
-            language="ru",
+            language=self.router._resolve_language(None, first, presence),
             character=personality,
             render_context={
                 "event": flow.name,
@@ -1109,24 +1090,27 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "context": notifications[0].context_data,
             },
         )
-        return NotificationContext(
-            flow=flow.name,
-            event=flow.name,
-            title=summary_payload["title"],
-            message=summary_payload["message"],
-            level=flow.severity,
-            source="queue_summary",
-            timestamp=now_iso,
+        # The summary client reports these statuses only after an AI request;
+        # disabled AI returns passthrough. Count here so retries and failed
+        # deliveries do not hide actual summary requests or count per channel.
+        if summary_payload.get("_herald_ai_status") in {"rewritten", "fallback"}:
+            self._reset_daily_counters_if_needed()
+            self._state.ai_requests_today += 1
+            self._state.ai_character_counts[personality] = (
+                self._state.ai_character_counts.get(personality, 0) + 1
+            )
+        return replace(
+            first,
+            title=summary_payload["title"], message=summary_payload["message"],
+            level=max(notifications, key=lambda item: severity_rank(item.level)).level,
+            source="queue_summary", timestamp=now_iso,
             notification_id=ensure_notification_id(None, flow.name, now_iso),
-            users=list(notifications[0].users),
-            room=notifications[0].room,
-            entities=list(notifications[0].entities),
-            context_data=dict(notifications[0].context_data),
-            metadata={"grouped": len(notifications)},
-            character=personality,
-            rewrite=True,
-            summarize=False,
-            personality=personality,
+            users=list(first.users), channels=list(first.channels),
+            entities=list(dict.fromkeys(entity for item in notifications for entity in item.entities)),
+            context_data=dict(first.context_data),
+            metadata={**first.metadata, "grouped": len(notifications),
+                      "notification_keys": list(dict.fromkeys(str(item.metadata.get("notification_key") or item.event) for item in notifications))},
+            character=personality, personality=personality, rewrite=False, summarize=False,
         )
 
     def _record_delivery(
@@ -1142,7 +1126,20 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._record_result_metrics(context, results)
         self._state.notifications_today += 1
         if delivered_channels:
-            self._state.last_flow_delivery[context.flow] = dt_util.now().isoformat()
+            stamp = dt_util.now().isoformat()
+            self._state.last_flow_delivery[context.flow] = stamp
+            keys = context.metadata.get("notification_keys") or [context.metadata.get("notification_key") or context.event]
+            for key in keys:
+                if key:
+                    self._state.last_notification_delivery[str(key)] = stamp
+            self._state.last_notification_delivery = dict(
+                sorted(self._state.last_notification_delivery.items(), key=lambda item: item[1])[-2048:]
+            )
+        route = context.metadata.get("routing_explanation", {})
+        explanation = explain_outcome("sent", results=results, reason=route.get("reason") if not results else None)
+        if route:
+            explanation["steps"] = list(route["steps"]) + explanation["steps"]
+        self._record_decision(context, explanation)
         last_notification = {
             "event": context.event,
             "title": context.title,
@@ -1161,6 +1158,7 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "grouped_count": grouped_count,
             "acknowledged": context.notification_id in self._state.acknowledged_notifications,
             "results": results,
+            "explanation": explanation,
         }
         self._state.last_notification = last_notification
         self._state.recent_notifications = (
@@ -1289,6 +1287,7 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _build_snapshot(self, presence) -> dict[str, Any]:
         """Build the sensor snapshot payload."""
+        settings = self.controls.effective_settings()
         return {
             "notifications_today": self._state.notifications_today,
             "deliveries_today": self._state.deliveries_today,
@@ -1318,14 +1317,18 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "characters": self.characters.list_character_keys(),
             "plugins": self.plugins.diagnostic_summary(),
             "control_entities": self._control_summary(),
+            "control_entity_ids": resolve_control_entities(self.hass, self.entry.entry_id, self.controls),
             "helper_bootstrap": self._control_summary(),
             "control_values": dict(self._state.control_values),
+            "effective_settings": settings,
+            "configuration_check": self.configuration_check(presence=presence, effective_settings=settings),
             "room_presence_sensors": {
                 room_name: room_presence_sensor_entity_id(room_name)
                 for room_name in sorted(self.presence.room_sensors())
             },
             "topology": self._build_topology_snapshot(presence),
             "last_route_preview": dict(self._state.last_route_preview),
+            "last_decisions": dict(self._state.last_decisions),
             "channel_policies": {
                 name: {
                     "type": channel.channel_type,
@@ -1362,6 +1365,24 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "notification_policies": dict(self._notification_policy_overrides),
             "pipeline_trace": self._state.traces[:20],
             "status": self._runtime_status(presence),
+        }
+
+    def configuration_check(
+        self, *, presence: PresenceSnapshot | None = None,
+        effective_settings: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Inspect local configuration without refreshing, saving, notifying, or invoking AI."""
+        if effective_settings is None:
+            effective_settings = (self.data or {}).get("effective_settings", {})
+        return {
+            "entry_id": self.entry.entry_id,
+            **build_configuration_report(
+                self.hass, self.config, self.controls,
+                presence if presence is not None else self.presence.snapshot(),
+                control_entities=resolve_control_entities(self.hass, self.entry.entry_id, self.controls),
+                checked_at=dt_util.now().isoformat(), effective_settings=effective_settings,
+                maintenance_active=self._maintenance_mode_active(),
+            ),
         }
 
     def _build_topology_snapshot(self, presence) -> dict[str, Any]:
@@ -1532,14 +1553,26 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Return the bounded history length used by UI-facing lists."""
         return max(1, int(self.config.router.get("recent_limit", 20)))
 
-    def _augment_runtime_config(self) -> None:
+    async def _async_augment_runtime_config(self) -> None:
         """Autodiscover a few legacy channels to ease migration."""
         self._reset_runtime_config()
 
-        for channel_name, payload in discover_runtime_channels(self.hass).items():
-            if channel_name in self.config.channels:
-                continue
-            self.config.channels[channel_name] = ChannelConfig.from_dict(channel_name, payload)
+        discovered_channels = await async_discover_runtime_channels(self.hass)
+        raw_channels = dict(self._raw_config.get("channels", {}))
+        base_channels = _merge_config(
+            getattr(self.hass, "data", {}).get(DOMAIN, {}).get(DATA_YAML_CONFIG, {}),
+            getattr(self.entry, "data", {}),
+        ).get("channels", {})
+        # Sparse Options values are preferences for discovered channels, not channel definitions.
+        for channel_name, payload in raw_channels.items():
+            if channel_name not in discovered_channels and channel_name not in base_channels and not any(
+                key in payload for key in ("type", "service", "entity_id", "data")
+            ):
+                self.config.channels.pop(channel_name, None)
+        for channel_name, payload in discovered_channels.items():
+            self.config.channels[channel_name] = ChannelConfig.from_dict(
+                channel_name, _merge_config(payload, raw_channels.get(channel_name, {})),
+            )
 
         voice_auto = self.config.channels.get("voice_auto")
         if voice_auto is not None and voice_auto.quiet_hours_policy == QUIET_HOURS_POLICY_DEFAULT:
@@ -1583,6 +1616,8 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _apply_default_tv_routing_rules(self) -> None:
         """Add TV delivery to a small set of high-value flows when TV channels exist."""
+        if self.config.presence.get("occupied_room_routing"):
+            return  # The room-specific TV channel mirrors voice_auto when its room is occupied.
         if "tv_auto" not in self.config.channels:
             return
         for flow_name in ("security_alerts", "camera_alerts", "timer_notifications"):
@@ -1593,7 +1628,8 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _sync_controls(self) -> bool:
         """Ensure Herald-owned control state exists and is reflected in config."""
-        changed = self.controls.ensure_defaults()
+        option_updates = self.controls.apply_option_updates(self.entry.options)
+        changed = self.controls.ensure_defaults() or option_updates
         payload = self._control_summary()
         if payload != self._control_snapshot:
             self._control_snapshot = payload
@@ -1664,11 +1700,14 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ),
         }
 
-    def _apply_notification_policy(self, notification_key: str, context: NotificationContext) -> str:
+    def _apply_notification_policy(
+        self, notification_key: str, context: NotificationContext, *,
+        overrides: dict[str, dict[str, Any]] | None = None,
+    ) -> str:
         """Apply one effective notification policy to the runtime context."""
         effective = self.notification_policies.effective_policy(
             notification_key=notification_key,
-            overrides=self._notification_policy_overrides,
+            overrides=self._notification_policy_overrides if overrides is None else overrides,
             channels=self.config.channels,
             inherited_channels=list(context.channels),
         )
@@ -1684,10 +1723,8 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         mode = str(effective.get("delivery_mode") or POLICY_MODE_INHERIT)
         if mode != POLICY_MODE_INHERIT:
             channels = list(effective.get("channels") or [])
-            if mode == POLICY_MODE_CUSTOM and channels:
-                context.channels = channels
-            elif mode != POLICY_MODE_CUSTOM:
-                context.channels = channels
+            context.channels = channels
+            context.metadata["channels_explicit"] = True
         return "continue"
 
     def _external_maintenance_mode_active(self) -> bool:
@@ -1795,12 +1832,19 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
         )
 
-    def _drop_for_cooldown(self, flow_name: str, flow) -> bool:
+    def _drop_for_cooldown(self, flow_name: str, flow, context: NotificationContext | None = None) -> bool:
         """Drop flow notifications while the delivery cooldown is active."""
         cooldown_seconds = max(0, int(getattr(flow, CONF_COOLDOWN, flow.cooldown_seconds)))
+        last_delivery = self._state.last_flow_delivery.get(flow_name)
+        if context is not None:
+            policy = context.metadata.get("notification_policy", {})
+            override = policy.get("cooldown_override")
+            if override is not None:
+                cooldown_seconds = max(0, int(override))
+                key = str(context.metadata.get("notification_key") or context.event)
+                last_delivery = self._state.last_notification_delivery.get(key)
         if cooldown_seconds <= 0:
             return False
-        last_delivery = self._state.last_flow_delivery.get(flow_name)
         if not last_delivery:
             return False
         last_delivery_dt = dt_util.parse_datetime(last_delivery)
@@ -1808,7 +1852,7 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
         return (dt_util.now() - last_delivery_dt).total_seconds() < cooldown_seconds
 
-    def _drop_for_dedup(self, flow, context: NotificationContext) -> bool:
+    def _drop_for_dedup(self, flow, context: NotificationContext, *, remember: bool = True) -> bool:
         """Drop duplicate events inside the configured deduplication window."""
         dedup_window_seconds = (
             max(0, int(context.suppress_seconds))
@@ -1828,8 +1872,10 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             previous_dt = dt_util.parse_datetime(previous)
             if previous_dt is not None and (now - previous_dt).total_seconds() < dedup_window_seconds:
                 return True
-        self._state.dedup_cache[fingerprint] = now.isoformat()
-        self._prune_dedup_cache(now)
+        if remember:
+            self._state.dedup_cache[fingerprint] = now.isoformat()
+            self._state.dedup_expiry[fingerprint] = (now + timedelta(seconds=dedup_window_seconds)).isoformat()
+            self._prune_dedup_cache(now)
         return False
 
     def _notification_fingerprint(self, context: NotificationContext) -> str:
@@ -1846,6 +1892,8 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 context.message.strip(),
                 ",".join(users),
                 ",".join(sorted(context.channels)),
+                context.room or "", context.device or "",
+                str(bool(context.metadata.get("channels_explicit"))),
             )
         )
         return hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()
@@ -1855,15 +1903,16 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         max_window = max(
             [int(flow.dedup_window_seconds) for flow in self.config.flows.values()] or [0]
         )
-        if max_window <= 0:
-            self._state.dedup_cache.clear()
-            return
-        cutoff = now - timedelta(seconds=max_window)
-        self._state.dedup_cache = {
-            fingerprint: stamp
-            for fingerprint, stamp in self._state.dedup_cache.items()
-            if (parsed := dt_util.parse_datetime(stamp)) is not None and parsed >= cutoff
-        }
+        retained = {}
+        for fingerprint, stamp in self._state.dedup_cache.items():
+            parsed = dt_util.parse_datetime(stamp)
+            expires = dt_util.parse_datetime(self._state.dedup_expiry.get(fingerprint, ""))
+            if expires is None and parsed is not None:
+                expires = parsed + timedelta(seconds=max_window)
+            if expires is not None and expires > now:
+                retained[fingerprint] = stamp
+        self._state.dedup_cache = retained
+        self._state.dedup_expiry = {key: value for key, value in self._state.dedup_expiry.items() if key in retained}
 
     def _register_event_listeners(self) -> None:
         """Listen for actionable-notification callbacks once."""
@@ -2070,6 +2119,12 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _build_dashboard_payload(self, *, title: str, preset: str) -> dict[str, Any]:
         """Render a storage-backed Lovelace dashboard payload."""
+        if preset == "dashboard":
+            return {"title": title, "views": [{
+                "title": "Herald", "path": "herald", "icon": "mdi:bell-badge-outline",
+                "type": "panel", "cards": [{"type": "custom:ha-herald-dashboard",
+                    **({"entry_id": self.entry.entry_id} if getattr(self, "entry", None) else {})}],
+            }]}
         control_summary = self._control_summary()
         room_definitions = [
             (
@@ -2835,8 +2890,8 @@ class HeraldCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Render the effective Herald routing policy."""
         return """{% set status_entity = 'sensor.herald_notification_center_status' %}
 {% set topology = state_attr(status_entity, 'topology') or {} %}
-{% set primary_room = topology.primary_room or 'auto' %}
-{% set occupied_rooms = topology.occupied_rooms or [] %}
+{% set primary_room = topology.get('primary_room') or 'auto' %}
+{% set occupied_rooms = topology.get('occupied_rooms', []) or [] %}
 {% set maintenance = state_attr(status_entity, 'maintenance_mode') %}
 {% set mute_all = state_attr(status_entity, 'mute_all') %}
 {% set quiet_hours = state_attr(status_entity, 'quiet_hours') %}
@@ -3076,8 +3131,28 @@ _Pipeline trace пока пуст._
 {% endif %}"""
 
     @staticmethod
-    def _write_text_file(path: str, content: str) -> None:
-        """Write a UTF-8 text file, creating missing parent directories."""
-        destination = Path(path)
+    def _write_dashboard_file(config_root: str, path: str, content: str) -> str:
+        """Atomically export YAML only beneath the real config dashboards directory."""
+        root = Path(config_root).resolve()
+        relative = Path(path)
+        if relative.is_absolute() or relative.suffix not in {".yaml", ".yml"} or ".." in relative.parts:
+            raise ValueError("Dashboard path must be a relative YAML file under dashboards/")
+        allowed = root / "dashboards"
+        if allowed.is_symlink():
+            raise ValueError("Dashboard directory cannot be a symlink")
+        destination = (root / relative).resolve()
+        if not destination.is_relative_to(allowed) or destination == allowed:
+            raise ValueError("Dashboard path must stay under dashboards/")
+        if (root / relative).is_symlink():
+            raise ValueError("Dashboard file cannot be a symlink")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(content, encoding="utf-8")
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=destination.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            try:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+                os.replace(temporary, destination)
+            finally:
+                temporary.unlink(missing_ok=True)
+        return str(destination)

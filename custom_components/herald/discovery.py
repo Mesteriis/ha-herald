@@ -7,23 +7,12 @@ import re
 from pathlib import Path
 from typing import Any
 
-import yaml
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+from homeassistant.util import slugify
 
-LEGACY_MOBILE_SERVICES: dict[str, str] = {
-    "mobile_iphone_aleksander": "notify.mobile_app_iphone_aleksander",
-    "mobile_iphone_vi": "notify.mobile_app_iphone_vi",
-    "mobile_ipad": "notify.mobile_app_ipad",
-    "mobile_macbook": "notify.mobile_app_macbook",
-    "mobile_aleksandrs_macbook_pro": "notify.mobile_app_aleksandrs_macbook_pro",
-}
-
-VOICE_ROOM_TARGETS: dict[str, str] = {
-    "living_room": "media_player.yandex_station_x11jdn200bwyse",
-    "bedroom": "media_player.yandex_station_lp000000000000472311000094e3cf79",
-    "bathroom": "media_player.yandex_station_lp0000000000006590730000ef14cd97",
-    "kitchen": "media_player.yandex_station_lb00000000000003070000004facb013",
-}
 ROOM_ALIASES: dict[str, str] = {
     "gostinaia": "living_room",
     "living_room": "living_room",
@@ -50,11 +39,34 @@ TV_NOTIFY_DEFAULT_DATA: dict[str, Any] = {
 }
 
 
-def discover_runtime_channels(hass: HomeAssistant) -> dict[str, dict[str, Any]]:
+async def async_discover_runtime_channels(
+    hass: HomeAssistant,
+) -> dict[str, dict[str, Any]]:
+    """Discover channels without performing filesystem I/O in the event loop."""
+    file_data = _runtime_registry_data(hass)
+    if file_data is None:
+        config_root = Path(hass.config.path(""))
+        file_data = await hass.async_add_executor_job(_load_discovery_file_data, config_root)
+    return discover_runtime_channels(hass, file_data=file_data)
+
+
+def discover_runtime_channels(
+    hass: HomeAssistant,
+    *,
+    file_data: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Discover useful channels from the live Home Assistant runtime."""
+    if file_data is None:
+        file_data = _runtime_registry_data(hass)
+        if file_data is None:
+            file_data = _load_discovery_file_data(Path(hass.config.path("")))
+    media_player_rooms = dict(file_data.get("media_player_rooms", {}))
     channels: dict[str, dict[str, Any]] = {}
     services = hass.services.async_services()
-    voice_channel_payload = _discover_room_audio_targets(hass)
+    voice_channel_payload = _discover_room_audio_targets(
+        hass, media_player_rooms, dict(file_data.get("media_player_platforms", {}))
+    )
+    mobile_owners = _discover_mobile_owners(hass, file_data)
 
     if voice_channel_payload is not None:
         channels["voice_auto"] = voice_channel_payload
@@ -69,52 +81,117 @@ def discover_runtime_channels(hass: HomeAssistant) -> dict[str, dict[str, Any]]:
             "min_level": "info",
         }
 
-    for channel_name, service_name in LEGACY_MOBILE_SERVICES.items():
-        channels.setdefault(
-            channel_name,
-            {
-                "type": "mobile_app",
-                "service": service_name,
-                "min_level": "info",
-            },
-        )
+        if owner := mobile_owners.get(service_name):
+            channels[f"mobile_{channel_name}"]["user"] = owner
 
     if telegram_channel := _discover_telegram_channel(hass, services):
         channels["telegram_default"] = telegram_channel
 
-    channels.update(_discover_tv_channels(hass, services))
+    channels.update(_discover_tv_channels(hass, services, media_player_rooms))
 
     return channels
 
 
+def _runtime_registry_data(hass: HomeAssistant) -> dict[str, Any] | None:
+    """Read only the room and ownership links needed from loaded HA registries."""
+    try:
+        entity_registry = er.async_get(hass)
+        device_registry = dr.async_get(hass)
+    except RuntimeError:
+        # Registry access before HA has loaded storage is temporarily unavailable.
+        return None
+    try:
+        area_registry = ar.async_get(hass)
+    except RuntimeError:
+        area_registry = None
+    if entity_registry is None or device_registry is None:
+        return None
+    rooms: dict[str, str] = {}
+    media_platforms: dict[str, str] = {}
+    tracker_entries: dict[str, set[str]] = {}
+    for entity in entity_registry.entities.values():
+        device = device_registry.async_get(entity.device_id) if entity.device_id else None
+        if entity.entity_id.startswith("media_player."):
+            media_platforms[entity.entity_id] = getattr(entity, "platform", "")
+            area_id = entity.area_id or (device.area_id if device is not None else None)
+            area = area_registry.async_get_area(area_id) if area_registry is not None and area_id else None
+            if room := _normalize_room_name(area.name if area is not None else area_id):
+                rooms[entity.entity_id] = room
+        if entity.entity_id.startswith("device_tracker."):
+            entry_ids = {entity.config_entry_id} if entity.config_entry_id else set()
+            if device is not None:
+                if hasattr(device, "config_entry_id"):
+                    if device.config_entry_id:
+                        entry_ids.add(device.config_entry_id)
+                else:
+                    entry_ids.update(device.config_entries)
+            tracker_entries[entity.entity_id] = entry_ids
+    return {"media_player_rooms": rooms, "media_player_platforms": media_platforms, "tracker_entries": tracker_entries}
+
+
+def _load_discovery_file_data(config_root: Path) -> dict[str, Any]:
+    """Load a room-only fallback when HA registries are unavailable to a caller."""
+    storage_root = config_root / ".storage"
+    return {
+        "media_player_rooms": _load_media_player_rooms(
+            storage_root / "core.entity_registry",
+            storage_root / "core.device_registry",
+        ),
+    }
+
+
+def _config_entries(hass: HomeAssistant, domain: str) -> list[Any]:
+    manager = getattr(hass, "config_entries", None)
+    if manager is None:
+        return []
+    return [entry for entry in manager.async_entries(domain) if not entry.disabled_by]
+
+
+def _discover_mobile_owners(hass: HomeAssistant, registry_data: dict[str, Any]) -> dict[str, str]:
+    """Associate services with people only through verified HA device links."""
+    entry_services = {
+        entry.entry_id: slugify(f"mobile_app_{entry.data['device_name']}")
+        for entry in _config_entries(hass, "mobile_app")
+        if entry.data.get("device_name")
+    }
+    service_entries: dict[str, set[str]] = {}
+    for entry_id, service in entry_services.items():
+        service_entries.setdefault(service, set()).add(entry_id)
+    owners: dict[str, set[str]] = {}
+    for person_id, person in _iter_domain_states(hass, "person"):
+        for tracker in person.attributes.get("device_trackers", []):
+            for entry_id in registry_data.get("tracker_entries", {}).get(tracker, set()):
+                if service := entry_services.get(entry_id):
+                    owners.setdefault(service, set()).add(person_id.removeprefix("person."))
+    return {
+        service: next(iter(users))
+        for service, users in owners.items()
+        if len(users) == 1 and len(service_entries[service]) == 1
+    }
+
+
 def _discover_room_audio_targets(
     hass: HomeAssistant,
+    media_player_rooms: dict[str, str],
+    media_player_platforms: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     """Discover room-level audio targets and build the conceptual voice_auto channel."""
-    media_player_rooms = _load_media_player_rooms(
-        Path(hass.config.path(".storage/core.entity_registry")),
-        Path(hass.config.path(".storage/core.device_registry")),
-    )
     tts_entity_id = _discover_tts_entity(hass)
     room_targets: dict[str, list[dict[str, Any]]] = {}
 
-    for room_name, entity_id in VOICE_ROOM_TARGETS.items():
-        if hass.states.get(entity_id) is None:
-            continue
-        room_targets.setdefault(room_name, []).append(
-            {
-                "kind": "alisa",
-                "entity_id": entity_id,
-                "service": "tts.yandex_station_say",
-                "priority": 1,
-            }
-        )
-
+    services = hass.services.async_services()
     for entity_id, state in _iter_domain_states(hass, "media_player"):
+        if state.state in {"unavailable", "unknown"}:
+            continue
         room_name = media_player_rooms.get(entity_id) or _infer_room_from_state(entity_id, state)
         if room_name is None:
             continue
-        if _looks_like_homepod(entity_id, state) and tts_entity_id is not None:
+        is_yandex = (media_player_platforms or {}).get(entity_id) == "yandex_station" or entity_id.startswith("media_player.yandex_station_")
+        if is_yandex and "yandex_station_say" in services.get("tts", {}):
+            room_targets.setdefault(room_name, []).append(
+                {"kind": "alisa", "entity_id": entity_id, "service": "tts.yandex_station_say", "priority": 1}
+            )
+        if _looks_like_homepod(entity_id, state) and tts_entity_id is not None and "speak" in services.get("tts", {}):
             room_targets.setdefault(room_name, []).append(
                 {
                     "kind": "homepod",
@@ -156,9 +233,11 @@ def _discover_room_audio_targets(
         for targets in sorted_targets.values()
         for target in targets
     )
-    voice_group = "group.voice_notification_targets" if hass.states.get("group.voice_notification_targets") else None
-    channel_service = "tts.yandex_station_say" if (voice_group or yandex_available) else "tts.speak"
-    channel_entity_id = voice_group or fallback_target
+    channel_service = "tts.yandex_station_say" if yandex_available else "tts.speak"
+    channel_entity_id = next(
+        target["entity_id"] for targets in sorted_targets.values() for target in targets
+        if target["service"] == channel_service
+    )
     voice_payload = {
         "type": "tts",
         "service": channel_service,
@@ -182,79 +261,32 @@ def _discover_telegram_channel(
     hass: HomeAssistant,
     services: dict[str, dict[str, Any]],
 ) -> dict[str, Any] | None:
-    """Discover the current Telegram delivery settings from existing HA config."""
+    """Use an unambiguous configured chat, without reading bot keys or secrets files."""
     if "send_message" not in services.get("telegram_bot", {}):
         return None
-
-    secrets = _load_yaml_file(Path(hass.config.path("secrets.yaml")))
-    config_entry_id = _as_text(secrets.get("telegram_bot_entry_id"))
-    chat_id = _coerce_intlike(secrets.get("telegram_history_chat_id"))
-    thread_id = _coerce_intlike(secrets.get("telegram_history_iot_thread_id"))
-
-    if not config_entry_id or chat_id is None:
-        storage_info = _load_telegram_from_storage(Path(hass.config.path(".storage/core.config_entries")))
-        config_entry_id = config_entry_id or storage_info.get("config_entry_id")
-        chat_id = chat_id if chat_id is not None else storage_info.get("chat_id")
-
-    if not config_entry_id or chat_id is None:
+    candidates = []
+    for entry in _config_entries(hass, "telegram_bot"):
+        for subentry in entry.subentries.values():
+            if subentry.subentry_type != "allowed_chat_ids":
+                continue
+            if (chat_id := _coerce_intlike(subentry.data.get("chat_id"))) is not None:
+                candidates.append((entry.entry_id, chat_id))
+    if len(candidates) != 1:
         return None
-
-    channel: dict[str, Any] = {
+    config_entry_id, chat_id = candidates[0]
+    return {
         "type": "telegram",
         "service": "telegram_bot.send_message",
         "chat_id": chat_id,
         "min_level": "info",
-        "data": {
-            "config_entry_id": config_entry_id,
-        },
+        "data": {"config_entry_id": config_entry_id},
     }
-    if thread_id is not None:
-        channel["thread_id"] = thread_id
-    return channel
-
-
-def _load_yaml_file(path: Path) -> dict[str, Any]:
-    """Load a YAML mapping from disk."""
-    try:
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {}
-    except Exception:
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
-
-
-def _load_telegram_from_storage(path: Path) -> dict[str, Any]:
-    """Read the active telegram_bot entry from HA storage."""
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {}
-    except Exception:
-        return {}
-
-    entries = payload.get("data", {}).get("entries", [])
-    for entry in entries:
-        if entry.get("domain") != "telegram_bot":
-            continue
-        subentries = entry.get("subentries", [])
-        chat_id = None
-        for subentry in subentries:
-            if subentry.get("subentry_type") != "allowed_chat_ids":
-                continue
-            chat_id = _coerce_intlike(subentry.get("data", {}).get("chat_id"))
-            if chat_id is not None:
-                break
-        return {
-            "config_entry_id": _as_text(entry.get("entry_id")),
-            "chat_id": chat_id,
-        }
-    return {}
 
 
 def _discover_tv_channels(
     hass: HomeAssistant,
     services: dict[str, dict[str, Any]],
+    media_player_rooms: dict[str, str],
 ) -> dict[str, dict[str, Any]]:
     """Discover TV-capable media players and build overlay-notify channels."""
     notify_services = {
@@ -264,10 +296,6 @@ def _discover_tv_channels(
     }
     if not notify_services:
         return {}
-    media_player_rooms = _load_media_player_rooms(
-        Path(hass.config.path(".storage/core.entity_registry")),
-        Path(hass.config.path(".storage/core.device_registry")),
-    )
     room_targets: dict[str, str] = {}
     notify_targets: dict[str, str] = {}
     fallback_target: str | None = None
@@ -376,7 +404,8 @@ def _resolve_tv_notify_service(
 def _discover_tts_entity(hass: HomeAssistant) -> str | None:
     """Return the first usable local TTS entity."""
     preferred = "tts.google_translate_en_com"
-    available = [entity_id for entity_id, _ in _iter_domain_states(hass, "tts")]
+    available = [entity_id for entity_id, state in _iter_domain_states(hass, "tts")
+                 if state.state not in {"unavailable", "unknown"}]
     if preferred in available:
         return preferred
     return available[0] if available else None
@@ -438,7 +467,7 @@ def _load_media_player_rooms(entity_registry_path: Path, device_registry_path: P
     """Map media_player entity ids to normalized room names via HA storage registries."""
     entity_payload = _load_json_file(entity_registry_path)
     device_payload = _load_json_file(device_registry_path)
-    if not entity_payload or not device_payload:
+    if not entity_payload:
         return {}
 
     devices = device_payload.get("data", {}).get("devices", [])
@@ -464,7 +493,7 @@ def _normalize_room_name(value: Any) -> str | None:
     text = _as_text(value)
     if text is None:
         return None
-    return ROOM_ALIASES.get(text.lower(), text.lower())
+    return ROOM_ALIASES.get(text.lower(), slugify(text))
 
 
 def _normalize_identifier(value: str) -> str:
@@ -484,7 +513,7 @@ def _load_json_file(path: Path) -> dict[str, Any]:
         loaded = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
-    except Exception:
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
     return loaded if isinstance(loaded, dict) else {}
 

@@ -1,10 +1,13 @@
 {
   "title": "Herald Notification Center",
   "config": {
+    "error": {
+      "invalid_time": "Введите время в формате ЧЧ:ММ (00:00–23:59)."
+    },
     "step": {
       "user": {
         "title": "Herald Notification Center",
-        "description": "Создайте запись Herald Notification Framework.",
+        "description": "Настройте доставку уведомлений Herald и необязательную генерацию текста.",
         "data": {
           "name": "Имя",
           "host": "Хост Ollama",
@@ -15,75 +18,281 @@
       }
     },
     "abort": {
+      "invalid_quiet_hours": "Введите время в формате ЧЧ:ММ (00:00–23:59).",
       "single_instance_allowed": "Поддерживается только один экземпляр Herald."
     }
   },
   "options": {
+    "error": {
+      "invalid_time": "Введите время в формате ЧЧ:ММ (00:00–23:59).",
+      "invalid_selection": "Выберите доступный элемент из списка.",
+      "invalid_value": "Проверьте формат и допустимые значения этого поля.",
+      "invalid_host": "Для OpenAI-совместимого API укажите базовый HTTPS-адрес; допускается окончание /v1."
+    },
     "step": {
       "init": {
-        "title": "Параметры Herald",
-        "description": "Настройте Ollama, тихие часы, maintenance policy, пороги каналов и per-flow routing policy.",
+        "title": "Настройки Herald",
+        "description": "Выберите раздел. Сохранение закроет окно и изменит только отредактированные поля; остальные настройки сохранятся.",
+        "menu_options": {
+          "quiet_hours": "Тихие часы",
+          "ai": "Генерация текста",
+          "maintenance": "Режим обслуживания",
+          "channel_select": "Каналы доставки",
+          "flow_select": "Потоки уведомлений"
+        }
+      },
+      "quiet_hours": {
+        "title": "Тихие часы",
+        "description": "Задайте период тихих часов по местному времени Home Assistant. Допустимая доставка зависит от настроек каналов и правил уведомлений.",
         "data": {
-          "host": "Хост Ollama",
-          "model": "Модель Ollama",
           "start": "Начало тихих часов",
-          "end": "Конец тихих часов",
-          "maintenance_mode_entity": "Сущность режима обслуживания",
-          "maintenance_min_level": "Минимальный уровень в обслуживании"
+          "end": "Конец тихих часов"
+        },
+        "data_description": {
+          "start": "Формат ЧЧ:ММ, от 00:00 до 23:59. Период может переходить через полночь.",
+          "end": "Формат ЧЧ:ММ, от 00:00 до 23:59. Период может переходить через полночь."
+        }
+      },
+      "ai": {
+        "title": "Генерация текста",
+        "description": "Выберите Ollama или OpenAI-совместимый API. Сохранение не включает ИИ и не проверяет соединение. Для включения используйте отдельный переключатель Herald. Сохранённый ключ не показывается; пустое поле сохраняет прежний ключ.",
+        "data": {
+          "provider": "Провайдер",
+          "host": "Адрес сервера",
+          "model": "Идентификатор модели",
+          "api_key": "Ключ API (пустое поле сохраняет прежний)"
+        }
+      },
+      "maintenance": {
+        "title": "Режим обслуживания",
+        "description": "Выберите необязательную внешнюю сущность режима обслуживания. Режим активен, если включена эта сущность или переключатель обслуживания Herald.",
+        "data": {
+          "maintenance_mode_entity": "Внешняя сущность режима обслуживания"
+        },
+        "data_description": {
+          "maintenance_mode_entity": "Идентификатор сущности, состояние on которой включает обслуживание. Пустое поле убирает эту внешнюю связь; переключатель обслуживания Herald остаётся доступен."
+        }
+      },
+      "channel_select": {
+        "title": "Каналы доставки",
+        "description": "Выберите существующий канал для настройки. Создание каналов и настройка учётных данных провайдера здесь недоступны.",
+        "data": {
+          "channel": "Канал"
+        }
+      },
+      "channel": {
+        "title": "Канал: {channel_name}",
+        "description": "Изменяются настройки только этого канала. Включённый канал разрешено использовать, но это не подтверждает доставку.",
+        "data": {
+          "enabled": "Канал включён",
+          "min_level": "Минимальная важность"
+        },
+        "data_description": {
+          "enabled": "Выключенный канал исключается из обычной доставки. Явный разрешённый тест канала может обойти эту настройку. Общие ограничения и правила уведомлений продолжают действовать.",
+          "min_level": "Обычные уведомления ниже этого порога пропускаются. Явный разрешённый тест канала может обойти порог канала; остальные ограничения продолжают действовать."
+        }
+      },
+      "flow_select": {
+        "title": "Потоки уведомлений",
+        "description": "Выберите существующий поток уведомлений, чтобы настроить ограничения повторов и персонажа сводки.",
+        "data": {
+          "flow": "Поток уведомлений"
+        }
+      },
+      "flow": {
+        "title": "Поток: {flow_name}",
+        "description": "Настройте значения для этого потока. Правило уведомления может переопределить интервал доставки, а запрос — подавление повторов. Сохранение не включает создание сводок.",
+        "data": {
+          "summary_personality": "Персонаж сводки",
+          "cooldown_seconds": "Интервал между доставками, с",
+          "dedup_window_seconds": "Подавление повторов, с"
+        },
+        "data_description": {
+          "summary_personality": "Пустое значение убирает переопределение для сводок. Тогда используется персонаж запроса, потока или персонаж по умолчанию.",
+          "cooldown_seconds": "Уведомления пропускаются в течение этого интервала после последней доставки потока. 0 отключает это ограничение. Отложенной отправки нет.",
+          "dedup_window_seconds": "Совпадающие повторные события пропускаются в пределах этого окна. 0 отключает этот фильтр. Отложенной отправки нет."
         }
       }
+    },
+    "abort": {
+      "no_channels": "Нет доступных каналов для редактирования. Проверьте конфигурацию каналов Herald.",
+      "no_flows": "Нет доступных потоков уведомлений для редактирования.",
+      "channel_unavailable": "Этот канал больше недоступен. Откройте настройки заново и выберите доступный канал.",
+      "flow_unavailable": "Этот поток больше недоступен. Откройте настройки заново и выберите доступный поток."
     }
   },
   "entity": {
     "sensor": {
-      "status": {"name": "Статус"},
-      "notifications_today": {"name": "Уведомлений сегодня"},
-      "deliveries_today": {"name": "Доставлено сегодня"},
-      "dropped_today": {"name": "Отброшено сегодня"},
-      "errors_today": {"name": "Ошибок сегодня"},
-      "ai_requests_today": {"name": "AI-запросов сегодня"},
-      "last_notification": {"name": "Последнее уведомление"},
-      "queue_size": {"name": "Размер очереди"}
+      "status": {
+        "name": "Статус"
+      },
+      "notifications_today": {
+        "name": "Уведомлений сегодня"
+      },
+      "deliveries_today": {
+        "name": "Доставлено сегодня"
+      },
+      "dropped_today": {
+        "name": "Отброшено сегодня"
+      },
+      "errors_today": {
+        "name": "Ошибок сегодня"
+      },
+      "ai_requests_today": {
+        "name": "AI-запросов сегодня"
+      },
+      "last_notification": {
+        "name": "Последнее уведомление"
+      },
+      "queue_size": {
+        "name": "Размер очереди"
+      }
     },
     "binary_sensor": {
-      "room_presence_sensor": {"name": "Присутствие Herald в комнате {room_name}"}
+      "room_presence_sensor": {
+        "name": "Присутствие Herald в комнате {room_name}"
+      }
     },
     "switch": {
-      "ai_enabled": {"name": "Herald AI включен"},
-      "level_info": {"name": "Herald уровень info"},
-      "level_warning": {"name": "Herald уровень warning"},
-      "level_critical": {"name": "Herald уровень critical"},
-      "maintenance_mode": {"name": "Herald режим обслуживания"},
-      "mute_all": {"name": "Herald mute all"},
-      "dashboard_sidebar": {"name": "Herald dashboard в боковой панели"},
-      "ai_info": {"name": "Herald AI для info"},
-      "ai_warning": {"name": "Herald AI для warning"},
-      "ai_critical": {"name": "Herald AI для critical"},
-      "channel_voice": {"name": "Herald голосовые каналы"},
-      "channel_push": {"name": "Herald push-каналы"},
-      "channel_tv": {"name": "Herald TV-каналы"},
-      "room_presence_switch": {"name": "Herald fallback-присутствие комнаты {room_name}"},
-      "user_silent": {"name": "Herald тихий режим пользователя {user_name}"},
-      "flow_enabled": {"name": "Herald поток {flow_name} включен"},
-      "channel_enabled": {"name": "Herald канал {channel_name} включен"}
+      "ai_enabled": {
+        "name": "Herald AI включен"
+      },
+      "level_info": {
+        "name": "Herald уровень info"
+      },
+      "level_warning": {
+        "name": "Herald уровень warning"
+      },
+      "level_critical": {
+        "name": "Herald уровень critical"
+      },
+      "maintenance_mode": {
+        "name": "Herald режим обслуживания"
+      },
+      "mute_all": {
+        "name": "Herald mute all"
+      },
+      "dashboard_sidebar": {
+        "name": "Herald dashboard в боковой панели"
+      },
+      "ai_info": {
+        "name": "Herald AI для info"
+      },
+      "ai_warning": {
+        "name": "Herald AI для warning"
+      },
+      "ai_critical": {
+        "name": "Herald AI для critical"
+      },
+      "channel_voice": {
+        "name": "Herald голосовые каналы"
+      },
+      "channel_push": {
+        "name": "Herald push-каналы"
+      },
+      "channel_tv": {
+        "name": "Herald TV-каналы"
+      },
+      "room_presence_switch": {
+        "name": "Herald fallback-присутствие комнаты {room_name}"
+      },
+      "user_silent": {
+        "name": "Herald тихий режим пользователя {user_name}"
+      },
+      "flow_enabled": {
+        "name": "Herald поток {flow_name} включен"
+      },
+      "channel_enabled": {
+        "name": "Herald канал {channel_name} включен"
+      }
     },
     "select": {
-      "maintenance_min_level": {"name": "Herald минимальный уровень обслуживания"},
-      "room_audio_target": {"name": "Herald устройство уведомлений для комнаты {room_name}"},
-      "user_language": {"name": "Herald язык пользователя {user_name}"},
-      "user_character": {"name": "Herald персонаж пользователя {user_name}"},
-      "channel_min_level": {"name": "Herald минимальный уровень канала {channel_name}"}
+      "maintenance_min_level": {
+        "name": "Herald минимальный уровень обслуживания"
+      },
+      "room_audio_target": {
+        "name": "Herald устройство уведомлений для комнаты {room_name}"
+      },
+      "user_language": {
+        "name": "Herald язык пользователя {user_name}"
+      },
+      "user_character": {
+        "name": "Herald персонаж пользователя {user_name}"
+      },
+      "channel_min_level": {
+        "name": "Herald минимальный уровень канала {channel_name}"
+      }
     },
     "number": {
-      "flow_summary_window": {"name": "Herald окно summary потока {flow_name}"},
-      "flow_dedup_window": {"name": "Herald окно dedup потока {flow_name}"},
-      "flow_cooldown": {"name": "Herald cooldown потока {flow_name}"}
+      "flow_summary_window": {
+        "name": "Herald окно summary потока {flow_name}"
+      },
+      "flow_dedup_window": {
+        "name": "Herald окно dedup потока {flow_name}"
+      },
+      "flow_cooldown": {
+        "name": "Herald cooldown потока {flow_name}"
+      }
     },
     "button": {
-      "test_level_info": {"name": "Herald тест уровня info"},
-      "test_level_warning": {"name": "Herald тест уровня warning"},
-      "test_level_critical": {"name": "Herald тест уровня critical"},
-      "channel_test": {"name": "Herald тест канала {channel_name}"}
+      "test_level_info": {
+        "name": "Herald тест уровня info"
+      },
+      "test_level_warning": {
+        "name": "Herald тест уровня warning"
+      },
+      "test_level_critical": {
+        "name": "Herald тест уровня critical"
+      },
+      "channel_test": {
+        "name": "Herald тест канала {channel_name}"
+      }
+    }
+  },
+  "services": {
+    "preview_notification_policy": {
+      "name": "Проверить правило уведомления",
+      "description": "Проверка черновика без сохранения и отправки. Сценарии изменяют контекст маршрутизатора; реальные состояния и время остаются текущими.",
+      "fields": {
+        "notification_key": {
+          "name": "Ключ уведомления"
+        },
+        "policy": {
+          "name": "Черновик правила"
+        },
+        "scenario": {
+          "name": "Сценарий"
+        },
+        "message": {
+          "name": "Пример текста"
+        }
+      }
+    },
+    "set_notification_policy": {
+      "name": "Настроить правило уведомления",
+      "description": "Изменить выбранные поля правила уведомления. Пропущенные поля сохраняют свои значения.",
+      "fields": {
+        "users": {
+          "name": "Получатели личных сообщений",
+          "description": "Идентификаторы person; null наследует, пустой список блокирует всю доставку. Общие каналы и звук в комнате остаются общими."
+        },
+        "target_room": {
+          "name": "Комната для голоса и TV",
+          "description": "Известная комната; null наследует. Без перехода на устройство в другой комнате."
+        },
+        "presence": {
+          "name": "Условие присутствия",
+          "description": "Всегда, только когда кто-то дома или только когда никого нет."
+        },
+        "quiet_hours": {
+          "name": "В тихие часы",
+          "description": "Общие ограничения, только допустимые текстовые каналы или пропуск. Без отложенной доставки."
+        }
+      }
+    },
+    "configuration_check": {
+      "name": "Проверить настройки уведомлений",
+      "description": "Проверка локальных настроек, сервисов, сущностей и ограничений без отправки, изменения настроек и вызова ИИ. Учётные данные и связь с провайдерами не проверяются."
     }
   }
 }

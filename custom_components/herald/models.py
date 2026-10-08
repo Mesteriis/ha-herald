@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .const import (
+    CONF_AI_API_KEY,
+    CONF_AI_PROVIDER,
     CONF_ALLOW_SUMMARY,
     CONF_AWAY_CHANNELS,
     CONF_CHANNEL_TYPE,
@@ -53,6 +55,7 @@ from .const import (
     CONF_TITLE_PREFIX,
     CONF_USER,
     CONF_USERS,
+    DEFAULT_AI_PROVIDER,
     DEFAULT_CHANNEL_MIN_LEVEL,
     DEFAULT_FLOW_COOLDOWN_SECONDS,
     DEFAULT_FLOW_DEDUP_WINDOW_SECONDS,
@@ -201,6 +204,7 @@ class HeraldConfig:
             CONF_ENABLED: True,
             CONF_HOST: DEFAULT_OLLAMA_HOST,
             CONF_MODEL: DEFAULT_OLLAMA_MODEL,
+            CONF_AI_PROVIDER: DEFAULT_AI_PROVIDER,
         }
     )
     channels: dict[str, ChannelConfig] = field(default_factory=dict)
@@ -241,6 +245,8 @@ class HeraldConfig:
             CONF_ENABLED: bool(payload.get(CONF_OLLAMA, {}).get(CONF_ENABLED, True)),
             CONF_HOST: str(payload.get(CONF_OLLAMA, {}).get(CONF_HOST, DEFAULT_OLLAMA_HOST)),
             CONF_MODEL: str(payload.get(CONF_OLLAMA, {}).get(CONF_MODEL, DEFAULT_OLLAMA_MODEL)),
+            CONF_AI_PROVIDER: str(payload.get(CONF_OLLAMA, {}).get(CONF_AI_PROVIDER, DEFAULT_AI_PROVIDER)),
+            CONF_AI_API_KEY: str(payload.get(CONF_OLLAMA, {}).get(CONF_AI_API_KEY, "")),
         }
 
         channels = {
@@ -259,8 +265,12 @@ class HeraldConfig:
                 ),
             }
 
-        flow_payload = {name: dict(value) for name, value in DEFAULT_FLOWS.items()}
-        flow_payload.update(dict(payload.get(CONF_FLOWS, {})))
+        configured_flows = dict(payload.get(CONF_FLOWS, {}))
+        flow_payload = {
+            name: {**dict(default), **dict(configured_flows.get(name, {}))}
+            for name, default in DEFAULT_FLOWS.items()
+        }
+        flow_payload.update({name: dict(raw) for name, raw in configured_flows.items() if name not in flow_payload})
         flows = {
             name: FlowConfig.from_dict(name, value)
             for name, value in flow_payload.items()
@@ -369,6 +379,7 @@ class PresenceSnapshot:
 
     people_home: list[str] = field(default_factory=list)
     nobody_home: bool = False
+    absence_confirmed: bool = False
     home_mode: str = "home"
     occupied_rooms: list[str] = field(default_factory=list)
     primary_room: str | None = None
@@ -399,6 +410,8 @@ class RuntimeState:
     acknowledged_notifications: dict[str, dict[str, Any]] = field(default_factory=dict)
     dedup_cache: dict[str, str] = field(default_factory=dict)
     last_flow_delivery: dict[str, str] = field(default_factory=dict)
+    last_notification_delivery: dict[str, str] = field(default_factory=dict)
+    dedup_expiry: dict[str, str] = field(default_factory=dict)
     channel_delivery_counts: dict[str, int] = field(default_factory=dict)
     channel_error_counts: dict[str, int] = field(default_factory=dict)
     drop_reasons: dict[str, int] = field(default_factory=dict)
@@ -406,6 +419,8 @@ class RuntimeState:
     traces: list[dict[str, Any]] = field(default_factory=list)
     control_values: dict[str, Any] = field(default_factory=dict)
     last_route_preview: dict[str, Any] = field(default_factory=dict)
+    control_metadata: dict[str, dict[str, Any]] = field(default_factory=dict)
+    last_decisions: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "RuntimeState":
@@ -428,6 +443,8 @@ class RuntimeState:
             acknowledged_notifications=dict(payload.get("acknowledged_notifications", {})),
             dedup_cache=dict(payload.get("dedup_cache", {})),
             last_flow_delivery=dict(payload.get("last_flow_delivery", {})),
+            last_notification_delivery=dict(payload.get("last_notification_delivery", {})),
+            dedup_expiry=dict(payload.get("dedup_expiry", {})),
             channel_delivery_counts=dict(payload.get("channel_delivery_counts", {})),
             channel_error_counts=dict(payload.get("channel_error_counts", {})),
             drop_reasons=dict(payload.get("drop_reasons", {})),
@@ -435,6 +452,8 @@ class RuntimeState:
             traces=list(payload.get("traces", [])),
             control_values=dict(payload.get("control_values", {})),
             last_route_preview=dict(payload.get("last_route_preview", {})),
+            control_metadata=dict(payload.get("control_metadata", {})),
+            last_decisions=dict(payload.get("last_decisions", {})),
         )
 
     def to_dict(self) -> dict[str, Any]:

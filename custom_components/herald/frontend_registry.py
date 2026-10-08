@@ -50,22 +50,26 @@ class HeraldFrontendRegistration:
         self._sidebar_visible_getter = sidebar_visible_getter
         self._lovelace = None
         self._retry_unsub: Callable[[], None] | None = None
+        self._closed = False
 
     async def async_register(self) -> None:
         """Expose the JS bundle and load it into the frontend."""
+        if self._closed:
+            return
         await self._async_register_static_path()
         add_extra_js_url(self.hass, FRONTEND_MODULE_URL)
         await self._async_register_lovelace_artifacts()
 
     async def _async_register_lovelace_artifacts(self) -> None:
         """Register Lovelace resource and dashboard when Lovelace runtime is available."""
+        if self._closed:
+            return
         if self._resolve_lovelace() is None:
             self._async_schedule_retry()
             return
 
         resource_ready = await self._async_register_lovelace_resource()
         if self._prefer_yaml_dashboard():
-            await self._async_remove_storage_dashboard()
             dashboard_ready = True
         else:
             dashboard_ready = await self._async_register_storage_dashboard()
@@ -111,6 +115,9 @@ class HeraldFrontendRegistration:
 
     async def _async_register_lovelace_resource(self) -> bool:
         """Create a Lovelace module resource entry when dashboards are storage-backed."""
+        if self._lovelace_mode() == "yaml":
+            # add_extra_js_url already loads the card; YAML resources are user-managed.
+            return True
         if not self._lovelace or self._lovelace_mode() != "storage":
             return False
 
@@ -194,11 +201,9 @@ class HeraldFrontendRegistration:
 
     async def _async_register_storage_dashboard(self) -> bool:
         """Create a storage-backed Herald Control Center when Lovelace uses storage mode."""
-        if (
-            self._dashboard_factory is None
-            or not self._lovelace
-            or self._lovelace_mode() != "storage"
-        ):
+        if self._dashboard_factory is None or self._lovelace_mode() == "yaml":
+            return True
+        if not self._lovelace or self._lovelace_mode() != "storage":
             return False
 
         dashboards = self._lovelace_value("dashboards")
@@ -214,18 +219,14 @@ class HeraldFrontendRegistration:
             "show_in_sidebar": self._sidebar_visible(),
             "require_admin": False,
         }
-        dashboard_config = self._dashboard_factory()
         existing = dashboards.get(FRONTEND_DASHBOARD_URL_PATH)
         if existing is not None:
-            await self._async_upsert_dashboard_registry(dashboard_item)
-            await existing.async_save(dashboard_config)
+            # A generated dashboard becomes user-owned after installation.
             return True
 
         if await self._async_dashboard_exists_in_registry(FRONTEND_DASHBOARD_URL_PATH):
-            await self._async_upsert_dashboard_registry(dashboard_item)
-            dashboard_store = lovelace_dashboard.LovelaceStorage(self.hass, dashboard_item)
-            await dashboard_store.async_save(dashboard_config)
-            dashboards[FRONTEND_DASHBOARD_URL_PATH] = dashboard_store
+            # Lovelace may not have materialized its persisted dashboards yet.
+            # Never replace the stored configuration with generated defaults.
             return True
 
         panels = self.hass.data.get(DATA_PANELS, {})
@@ -234,8 +235,9 @@ class HeraldFrontendRegistration:
                 "Cannot auto-register Herald dashboard at %s because the URL path is already in use",
                 FRONTEND_DASHBOARD_URL_PATH,
             )
-            return False
+            return True
 
+        dashboard_config = self._dashboard_factory()
         await self._async_upsert_dashboard_registry(dashboard_item)
         dashboard_store = lovelace_dashboard.LovelaceStorage(self.hass, dashboard_item)
         await dashboard_store.async_save(dashboard_config)
@@ -368,10 +370,17 @@ class HeraldFrontendRegistration:
         except Exception:  # noqa: BLE001
             return True
 
+    async def async_shutdown(self) -> None:
+        """Cancel delayed registration when the config entry is unloaded."""
+        self._closed = True
+        if self._retry_unsub is not None:
+            self._retry_unsub()
+            self._retry_unsub = None
+
     @callback
     def _async_schedule_retry(self) -> None:
         """Retry Lovelace registration on cold start until runtime is ready."""
-        if self._retry_unsub is not None:
+        if self._closed or self._retry_unsub is not None:
             return
 
         @callback

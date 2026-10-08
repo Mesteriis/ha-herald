@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -16,6 +18,12 @@ from .const import (
     DEFAULT_MAINTENANCE_MIN_LEVEL,
     DEFAULT_PERSONALITY,
 )
+from .effective_config import (
+    CONTROL_LEVEL_OPTIONS,
+    OPTIONS_CONTROL_UPDATES,
+    configuration_defaults,
+    inherited_setting,
+)
 from .translations import normalize_language
 
 if TYPE_CHECKING:
@@ -24,7 +32,7 @@ if TYPE_CHECKING:
     from .presence import PresenceResolver
 
 DEFAULT_LANGUAGE_OPTIONS: tuple[str, ...] = ("ru", "en", "es", "fr")
-SEVERITY_OPTIONS: tuple[str, ...] = ("info", "warning", "critical")
+SEVERITY_OPTIONS: tuple[str, ...] = CONTROL_LEVEL_OPTIONS
 CONTROL_PLATFORM = Literal["switch", "select", "number", "button"]
 CHANNEL_FAMILY_TYPES: dict[str, set[str]] = {
     "voice": {"tts", "tts_hume"},
@@ -165,12 +173,17 @@ class HeraldControlManager:
         presence: PresenceResolver,
         characters: CharacterManager,
         state_getter,
+        *,
+        config_layers_getter: Callable[[], Mapping[str, Mapping[str, Any]]] | None = None,
     ) -> None:
         self._hass = hass
         self._config = config
         self._presence = presence
         self._characters = characters
         self._state_getter = state_getter
+        self._config_layers_getter = config_layers_getter or (lambda: {})
+        self._inherited_config = deepcopy(config.to_dict())
+        self._inherited_defaults: dict[str, Any] = {}
 
     def build_specs(self) -> list[HeraldControlSpec]:
         """Return the complete dynamic control topology."""
@@ -181,7 +194,7 @@ class HeraldControlManager:
                 object_id="herald_ai_enabled",
                 name="Herald AI Enabled",
                 group="ai",
-                default=True,
+                default=bool(self._config.ollama.get("enabled", True)),
                 icon="mdi:brain",
                 translation_key="ai_enabled",
             ),
@@ -464,7 +477,7 @@ class HeraldControlManager:
                         default=int(flow.dedup_window_seconds),
                         icon="mdi:content-duplicate",
                         min_value=0,
-                        max_value=3600,
+                        max_value=86400,
                         step=5,
                         translation_key="flow_dedup_window",
                         translation_placeholders={"flow_name": label},
@@ -478,7 +491,7 @@ class HeraldControlManager:
                         default=int(flow.cooldown_seconds),
                         icon="mdi:timer-cog-outline",
                         min_value=0,
-                        max_value=3600,
+                        max_value=86400,
                         step=5,
                         translation_key="flow_cooldown",
                         translation_placeholders={"flow_name": label},
@@ -553,31 +566,99 @@ class HeraldControlManager:
             summary.setdefault(spec.group, []).append(spec.entity_id)
         return {key: sorted(values) for key, values in summary.items()}
 
+    def _inherited(
+        self, spec: HeraldControlSpec, layers: Mapping[str, Mapping[str, Any]], defaults: Mapping[str, Any]
+    ) -> tuple[Any, str]:
+        fallback = self._inherited_defaults.setdefault(spec.key, deepcopy(spec.default))
+        value, source = inherited_setting(
+            spec.key, layers, defaults, fallback
+        )
+        return self._coerce_spec_value(spec, value), source
+
+    def effective_settings(self) -> dict[str, dict[str, Any]]:
+        """Describe actual settings and their immutable inherited value/provenance."""
+        state = self._state_getter()
+        layers = self._config_layers_getter()
+        defaults = configuration_defaults(layers, self._inherited_config)
+        result = {}
+        for spec in self.build_specs():
+            if spec.platform == "button":
+                continue
+            inherited, inherited_source = self._inherited(spec, layers, defaults)
+            metadata = state.control_metadata.get(spec.key, {})
+            result[spec.key] = {
+                "value": deepcopy(self.value(spec.key, inherited)),
+                "source": metadata.get("source", "restored" if spec.key in state.control_values else inherited_source),
+                "inherited": deepcopy(inherited),
+                "inherited_source": inherited_source,
+            }
+        return result
+
+    def apply_option_updates(self, options: Mapping[str, Any]) -> bool:
+        """Consume edited Options controls once; never replay an older form on reload."""
+        state = self._state_getter()
+        changed = False
+        specs = {spec.key: spec for spec in self.build_specs()}
+        for key, update in options.get(OPTIONS_CONTROL_UPDATES, {}).items():
+            spec = specs.get(key)
+            if spec is None or spec.platform == "button" or not isinstance(update, Mapping):
+                continue
+            revision = update.get("revision")
+            if not isinstance(revision, str) or not revision or "value" not in update:
+                continue
+            metadata = state.control_metadata.get(key, {})
+            if metadata.get("option_revision") == revision:
+                continue
+            value = self._coerce_spec_value(spec, update["value"])
+            state.control_values[key] = value
+            state.control_metadata[key] = {"source": "options", "option_revision": revision}
+            if key.startswith("flow_enabled:"):
+                state.flow_overrides[key.split(":", 1)[1]] = bool(value)
+            changed = True
+        return changed
+
     def ensure_defaults(self) -> bool:
-        """Seed missing control values, migrating legacy helper state when present."""
+        """Preserve old values and distinguish inherited settings from explicit overrides."""
         state = self._state_getter()
         changed = False
         known_keys = {spec.key: spec for spec in self.build_specs()}
-
+        layers = self._config_layers_getter()
+        defaults = configuration_defaults(layers, self._inherited_config)
         for spec in known_keys.values():
             if spec.platform == "button":
                 continue
+            inherited, inherited_source = self._inherited(spec, layers, defaults)
             current = state.control_values.get(spec.key)
+            metadata = state.control_metadata.get(spec.key)
             if current is None:
-                state.control_values[spec.key] = self._legacy_value_for_spec(spec)
+                current = self._legacy_value_for_spec(spec)
+                source = inherited_source
+                if spec.key.startswith("flow_enabled:") and spec.key.split(":", 1)[1] in state.flow_overrides:
+                    source = "restored"
+                elif (entity_id := self._legacy_helper_entity_id(spec.key)) and self._state_from_entity(entity_id, spec) is not None:
+                    source = "legacy"
+                else:
+                    current = inherited
+                if spec.key == ai_enabled_control_key():
+                    current = bool(current) and bool(inherited)
+                state.control_metadata[spec.key] = {"source": source}
                 changed = True
-                continue
+            elif metadata is None:
+                # Older Stores cannot distinguish seeded defaults from user edits.
+                # Keep the effective state and label that uncertainty honestly.
+                if spec.key == ai_enabled_control_key():
+                    current = bool(current) and bool(inherited)
+                state.control_metadata[spec.key] = {"source": "restored"}
+                changed = True
+            elif metadata.get("source") in {"yaml", "entry", "options", "default"} and not metadata.get("option_revision"):
+                current = inherited
+                if metadata.get("source") != inherited_source:
+                    state.control_metadata[spec.key] = {**metadata, "source": inherited_source}
+                    changed = True
             coerced = self._coerce_spec_value(spec, current)
-            if coerced != current:
+            if state.control_values.get(spec.key) != coerced:
                 state.control_values[spec.key] = coerced
                 changed = True
-
-        for flow_name, enabled in list(state.flow_overrides.items()):
-            key = flow_enabled_control_key(flow_name)
-            if key not in state.control_values:
-                state.control_values[key] = bool(enabled)
-                changed = True
-
         if self._prune_stale_values(known_keys):
             changed = True
         if self.sync_runtime_config():
@@ -587,6 +668,10 @@ class HeraldControlManager:
     def sync_runtime_config(self) -> bool:
         """Apply control state to runtime config objects used by the pipeline."""
         changed = False
+        ai_enabled = bool(self.value(ai_enabled_control_key(), self._config.ollama.get("enabled", True)))
+        if self._config.ollama.get("enabled") != ai_enabled:
+            self._config.ollama["enabled"] = ai_enabled
+            changed = True
         for flow_name, flow in self._config.flows.items():
             enabled = bool(self.value(flow_enabled_control_key(flow_name), flow.enabled))
             if flow.enabled != enabled:
@@ -638,9 +723,11 @@ class HeraldControlManager:
             return False
         coerced = self._coerce_spec_value(spec, value)
         state = self._state_getter()
-        if state.control_values.get(key) == coerced:
+        metadata = state.control_metadata.get(key, {})
+        if state.control_values.get(key) == coerced and metadata.get("source") == "runtime":
             return False
         state.control_values[key] = coerced
+        state.control_metadata[key] = {**metadata, "source": "runtime"}
         if key.startswith("flow_enabled:"):
             flow_name = key.split(":", maxsplit=1)[1]
             state.flow_overrides[flow_name] = bool(coerced)
@@ -730,12 +817,14 @@ class HeraldControlManager:
         stale = [
             key
             for key in state.control_values
-            if key not in known_keys or known_keys[key].platform == "button"
+            if (key in known_keys and known_keys[key].platform == "button")
+            or key.startswith(("test_level:", "test_channel:"))
         ]
         if not stale:
             return False
         for key in stale:
             state.control_values.pop(key, None)
+            state.control_metadata.pop(key, None)
         return True
 
     def _legacy_value_for_spec(self, spec: HeraldControlSpec) -> bool | str | float | int:

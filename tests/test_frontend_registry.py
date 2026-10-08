@@ -242,7 +242,7 @@ def test_frontend_registry_retries_until_lovelace_is_ready(monkeypatch) -> None:
     ]
 
 
-def test_frontend_registry_updates_existing_dashboard_config(monkeypatch) -> None:
+def test_frontend_registry_preserves_existing_dashboard_config(monkeypatch) -> None:
     hass = _FakeHass()
     extra_urls: list[str] = []
     existing = _FakeDashboardStore(hass, {"id": FRONTEND_DASHBOARD_URL_PATH})
@@ -269,11 +269,8 @@ def test_frontend_registry_updates_existing_dashboard_config(monkeypatch) -> Non
     )
 
     assert FRONTEND_MODULE_URL in extra_urls
-    assert existing.saved == payload
-    assert (
-        _FakeStore.saved_data["lovelace_dashboards"]["items"][0]["url_path"]
-        == FRONTEND_DASHBOARD_URL_PATH
-    )
+    assert existing.saved is None
+    assert _FakeStore.saved_data == {}
 
 
 def test_frontend_registry_uses_sidebar_visibility_getter(monkeypatch) -> None:
@@ -336,7 +333,7 @@ def test_frontend_registry_updates_sidebar_visibility(monkeypatch) -> None:
     assert panel["show_in_sidebar"] is False
 
 
-def test_frontend_registry_updates_storage_dashboard_before_runtime_materializes(monkeypatch) -> None:
+def test_frontend_registry_preserves_storage_dashboard_before_runtime_materializes(monkeypatch) -> None:
     hass = _FakeHass()
     extra_urls: list[str] = []
     panels: list[tuple[str, dict]] = []
@@ -385,6 +382,6 @@ def test_frontend_registry_updates_storage_dashboard_before_runtime_materializes
     )
 
     assert FRONTEND_MODULE_URL in extra_urls
-    assert FRONTEND_DASHBOARD_URL_PATH in hass.data["lovelace"].dashboards
-    assert hass.data["lovelace"].dashboards[FRONTEND_DASHBOARD_URL_PATH].saved == payload
+    assert FRONTEND_DASHBOARD_URL_PATH not in hass.data["lovelace"].dashboards
+    assert _FakeStore.saved_data["lovelace_dashboards"]["items"][0]["title"] == FRONTEND_DASHBOARD_TITLE
     assert panels == []

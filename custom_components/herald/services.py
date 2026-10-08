@@ -8,14 +8,7 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
-
-try:
-    from homeassistant.core import ServiceCall, SupportsResponse
-except ImportError:  # pragma: no cover - compatibility fallback for test/runtime drift
-    ServiceCall = Any  # type: ignore[assignment]
-    SupportsResponse = None  # type: ignore[assignment]
-
-ServiceResponse = dict[str, Any]
+from homeassistant.helpers.service import async_register_admin_service
 
 from .const import (
     CONF_NOTIFICATION_ID,
@@ -24,19 +17,30 @@ from .const import (
     DEFAULT_SNOOZE_MINUTES,
     DOMAIN,
     SERVICE_ACKNOWLEDGE,
+    SERVICE_CONFIGURATION_CHECK,
     SERVICE_GENERATE_DASHBOARD,
     SERVICE_GET_NOTIFICATION_POLICY,
     SERVICE_GET_NOTIFICATION_REGISTRY,
     SERVICE_NOTIFY,
+    SERVICE_PREVIEW_NOTIFICATION_POLICY,
     SERVICE_REFRESH_NOTIFICATION_REGISTRY,
-    SERVICE_ROUTE_PREVIEW,
     SERVICE_RESET_NOTIFICATION_POLICY,
-    SERVICE_SET_NOTIFICATION_POLICY,
+    SERVICE_ROUTE_PREVIEW,
     SERVICE_SET_FLOW_STATE,
+    SERVICE_SET_NOTIFICATION_POLICY,
     SERVICE_SNOOZE_FLOW,
     SERVICE_TRACE_SNAPSHOT,
     SUPPORTED_DASHBOARD_PRESETS,
 )
+from .policy_rules import PRESENCE_OPTIONS, QUIET_HOURS_OPTIONS, normalize_room, normalize_user
+
+try:
+    from homeassistant.core import ServiceCall, SupportsResponse
+except ImportError:  # pragma: no cover - compatibility fallback for test/runtime drift
+    ServiceCall = Any  # type: ignore[assignment]
+    SupportsResponse = None  # type: ignore[assignment]
+
+ServiceResponse = dict[str, Any]
 
 NOTIFY_SCHEMA = vol.Schema(
     {
@@ -76,7 +80,8 @@ NOTIFY_SCHEMA = vol.Schema(
         vol.Optional("metadata"): vol.Any(dict, cv.string),
         vol.Optional("notification_id"): cv.string,
         vol.Optional("include_actions", default=False): cv.boolean,
-        vol.Optional("rewrite", default=False): cv.boolean,
+        # The request parser resolves the default and the legacy humanized opt-out.
+        vol.Optional("rewrite"): cv.boolean,
         vol.Optional("summarize", default=True): cv.boolean,
         vol.Optional("force", default=False): cv.boolean,
     }
@@ -149,11 +154,25 @@ SET_NOTIFICATION_POLICY_SCHEMA = vol.Schema(
             ["inherit", "disabled", "text_only", "voice_only", "push_only", "custom"]
         ),
         vol.Optional("channels"): vol.Any([cv.string], cv.string),
-        vol.Optional("level_override"): cv.string,
-        vol.Optional("cooldown_override"): vol.Any(vol.Coerce(int), None, ""),
-        vol.Optional("notes"): cv.string,
+        vol.Optional("level_override"): vol.Any(None, vol.In(["", "debug", "info", "notice", "warning", "critical", "security", "ai", "system"])),
+        vol.Optional("cooldown_override"): vol.Any(vol.All(vol.Coerce(int), vol.Range(min=0, max=86400)), None, ""),
+        vol.Optional("notes"): vol.Any(None, cv.string),
+        vol.Optional("users"): vol.Any(None, [vol.All(str, normalize_user, vol.Match(r"^person\.[a-z0-9_]+$"))]),
+        vol.Optional("target_room"): vol.Any(None, vol.All(str, normalize_room, vol.Length(min=1, max=255))),
+        vol.Optional("presence"): vol.In(PRESENCE_OPTIONS),
+        vol.Optional("quiet_hours"): vol.In(QUIET_HOURS_OPTIONS),
     }
 )
+
+POLICY_DRAFT_SCHEMA = vol.Schema({key: value for key, value in SET_NOTIFICATION_POLICY_SCHEMA.schema.items()
+                                 if key.schema not in {"entry_id", "notification_key"}})
+PREVIEW_NOTIFICATION_POLICY_SCHEMA = vol.Schema({
+    vol.Optional("entry_id"): cv.string,
+    vol.Required("notification_key"): cv.string,
+    vol.Optional("policy"): POLICY_DRAFT_SCHEMA,
+    vol.Optional("scenario", default="current"): vol.In(["current", "quiet_hours", "away"]),
+    vol.Optional("message"): cv.string,
+})
 
 RESET_NOTIFICATION_POLICY_SCHEMA = vol.Schema(
     {
@@ -207,6 +226,10 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         coordinator = _get_coordinator(hass, call.data.get("entry_id"))
         return await coordinator.async_preview_route(call.data)
 
+    async def async_handle_preview_notification_policy(call: ServiceCall) -> ServiceResponse:
+        coordinator = _get_coordinator(hass, call.data.get("entry_id"))
+        return await coordinator.async_preview_notification_policy(call.data)
+
     async def async_handle_acknowledge(call: ServiceCall) -> None:
         coordinator = _get_coordinator(hass, call.data.get("entry_id"))
         await coordinator.async_acknowledge(
@@ -233,6 +256,10 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         coordinator = _get_coordinator(hass, call.data.get("entry_id"))
         return coordinator.notification_registry_snapshot()
 
+    async def async_handle_configuration_check(call: ServiceCall) -> ServiceResponse:
+        coordinator = _get_coordinator(hass, call.data.get("entry_id"))
+        return coordinator.configuration_check()
+
     async def async_handle_get_notification_policy(call: ServiceCall) -> ServiceResponse:
         coordinator = _get_coordinator(hass, call.data.get("entry_id"))
         return coordinator.get_notification_policy(call.data["notification_key"])
@@ -250,7 +277,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     _async_register(SERVICE_NOTIFY, async_handle_notify, schema=NOTIFY_SCHEMA)
     _async_register(
-        SERVICE_GENERATE_DASHBOARD,
+        SERVICE_CONFIGURATION_CHECK, async_handle_configuration_check,
+        schema=GET_NOTIFICATION_REGISTRY_SCHEMA, supports_response=supports_only,
+    )
+    async_register_admin_service(
+        hass, DOMAIN, SERVICE_GENERATE_DASHBOARD,
         async_handle_generate_dashboard,
         schema=DASHBOARD_SCHEMA,
     )
@@ -270,6 +301,10 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         async_handle_route_preview,
         schema=ROUTE_PREVIEW_SCHEMA,
         supports_response=supports_only,
+    )
+    _async_register(
+        SERVICE_PREVIEW_NOTIFICATION_POLICY, async_handle_preview_notification_policy,
+        schema=PREVIEW_NOTIFICATION_POLICY_SCHEMA, supports_response=supports_only,
     )
     _async_register(
         SERVICE_ACKNOWLEDGE,
@@ -324,10 +359,12 @@ async def async_unload_services(hass: HomeAssistant) -> None:
     hass.services.async_remove(DOMAIN, SERVICE_SET_FLOW_STATE)
     hass.services.async_remove(DOMAIN, SERVICE_TRACE_SNAPSHOT)
     hass.services.async_remove(DOMAIN, SERVICE_ROUTE_PREVIEW)
+    hass.services.async_remove(DOMAIN, SERVICE_PREVIEW_NOTIFICATION_POLICY)
     hass.services.async_remove(DOMAIN, SERVICE_ACKNOWLEDGE)
     hass.services.async_remove(DOMAIN, SERVICE_SNOOZE_FLOW)
     hass.services.async_remove(DOMAIN, SERVICE_REFRESH_NOTIFICATION_REGISTRY)
     hass.services.async_remove(DOMAIN, SERVICE_GET_NOTIFICATION_REGISTRY)
+    hass.services.async_remove(DOMAIN, SERVICE_CONFIGURATION_CHECK)
     hass.services.async_remove(DOMAIN, SERVICE_GET_NOTIFICATION_POLICY)
     hass.services.async_remove(DOMAIN, SERVICE_SET_NOTIFICATION_POLICY)
     hass.services.async_remove(DOMAIN, SERVICE_RESET_NOTIFICATION_POLICY)

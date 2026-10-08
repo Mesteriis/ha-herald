@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 
 from .const import CONF_CONDITIONS, CONF_HOME_MODE_ENTITY, CONF_SEVERITY, SEVERITY_RANK
 from .models import FlowConfig, NotificationContext
@@ -33,7 +34,7 @@ async def async_flow_matches(
     if not conditions:
         return True
 
-    now_local = datetime.now().time()
+    now_local = dt_util.now().time()
 
     presence_value = conditions.get("presence")
     if presence_value == "nobody_home":
@@ -48,13 +49,15 @@ async def async_flow_matches(
     if time_condition := conditions.get("time"):
         after_value = time_condition.get("after")
         before_value = time_condition.get("before")
-        if after_value:
-            after_time = datetime.strptime(str(after_value), "%H:%M").time()
-            if now_local < after_time:
+        after_time = datetime.strptime(str(after_value), "%H:%M").time() if after_value else None
+        before_time = datetime.strptime(str(before_value), "%H:%M").time() if before_value else None
+        if after_time is not None and before_time is not None and after_time > before_time:
+            if not (now_local >= after_time or now_local <= before_time):
                 return False
-        if before_value:
-            before_time = datetime.strptime(str(before_value), "%H:%M").time()
-            if now_local > before_time:
+        else:
+            if after_time is not None and now_local < after_time:
+                return False
+            if before_time is not None and now_local > before_time:
                 return False
 
     if expected_mode := conditions.get("mode"):

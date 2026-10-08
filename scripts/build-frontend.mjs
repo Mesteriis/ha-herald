@@ -1,11 +1,44 @@
-import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { gzipSync } from 'node:zlib';
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
+import { build } from "esbuild";
 
-const source = 'frontend/herald-card.js';
-const target = 'custom_components/herald/frontend/herald-card.js';
-const targetGzip = 'custom_components/herald/frontend/herald-card.js.gz';
+const root = fileURLToPath(new URL("../", import.meta.url));
+const target = "custom_components/herald/frontend/herald-card.js";
+const checkOnly = process.argv.includes("--check");
+const result = await build({
+  absWorkingDir: root,
+  entryPoints: ["frontend/index.js"],
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: "es2020",
+  legalComments: "eof",
+  write: false,
+  banner: { js: "// Generated from frontend/index.js by npm run build. Do not edit." },
+});
+const bundle = Buffer.from(result.outputFiles[0].contents);
+const outputs = new Map([
+  [target, bundle],
+  [`${target}.gz`, gzipSync(bundle, { level: 9 })],
+]);
 
-mkdirSync(dirname(target), { recursive: true });
-cpSync(source, target);
-writeFileSync(targetGzip, gzipSync(readFileSync(source)));
+for (const [relativePath, contents] of outputs) {
+  const path = join(root, relativePath);
+  if (checkOnly) {
+    let current;
+    try {
+      current = readFileSync(path);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if (!current?.equals(contents)) {
+      throw new Error(`${relativePath} is stale or missing. Run npm run build and commit both generated files.`);
+    }
+  } else {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, contents);
+  }
+}
+console.log(checkOnly ? "Frontend bundle and gzip match the source." : "Built frontend bundle and gzip.");

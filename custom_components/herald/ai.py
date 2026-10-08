@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
+from functools import partial
 from typing import Any
+from urllib.parse import urlsplit
 
 from aiohttp import ClientError, ClientSession
 from homeassistant.core import HomeAssistant
 
 from .characters import CharacterManager
-from .const import DEFAULT_PERSONALITY
+from .const import DEFAULT_PERSONALITY, VERSION
 from .controls import HeraldControlManager
 from .models import HeraldConfig, NotificationContext
 from .translations import LANGUAGE_LABELS, default_summary_title, normalize_notification_text
@@ -19,7 +21,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class HeraldAIClient:
-    """Ollama-backed rewrite and summary client."""
+    """Ollama or OpenAI-compatible rewrite and summary client."""
 
     def __init__(
         self,
@@ -73,13 +75,16 @@ class HeraldAIClient:
                 character=character,
             )
 
-        prompt, prompt_source = self._build_notification_prompt(
-            title=title,
-            message=message,
-            level=level,
-            language=language,
-            character=character,
-            render_context=render_context,
+        prompt, prompt_source = await self._hass.async_add_executor_job(
+            partial(
+                self._build_notification_prompt,
+                title=title,
+                message=message,
+                level=level,
+                language=language,
+                character=character,
+                render_context=render_context,
+            )
         )
         response, failure_reason = await self._async_generate_json(prompt)
         if not response:
@@ -134,11 +139,14 @@ class HeraldAIClient:
                 character=character,
             )
 
-        prompt, prompt_source = self._build_summary_prompt(
-            language=language,
-            character=character,
-            notifications=lines,
-            render_context=render_context,
+        prompt, prompt_source = await self._hass.async_add_executor_job(
+            partial(
+                self._build_summary_prompt,
+                language=language,
+                character=character,
+                notifications=lines,
+                render_context=render_context,
+            )
         )
         response, failure_reason = await self._async_generate_json(prompt)
         if not response:
@@ -241,30 +249,62 @@ class HeraldAIClient:
         return self._config.personalities.get(key, self._config.personalities[DEFAULT_PERSONALITY])
 
     async def _async_generate_json(self, prompt: str) -> tuple[dict[str, Any] | None, str | None]:
-        """Call the Ollama generate endpoint and parse a JSON response."""
-        url = str(self._config.ollama.get("host", "")).rstrip("/") + "/api/generate"
-        payload = {
-            "model": self._config.ollama.get("model"),
-            "stream": False,
-            "format": "json",
-            "options": {"temperature": 0.35},
-            "prompt": prompt,
-        }
+        """Call the selected provider and parse its JSON answer."""
+        settings = self._config.ollama
+        provider = settings.get("provider", "ollama")
+        host = str(settings.get("host", "")).strip().rstrip("/")
+        if provider == "openai":
+            # Never send credentials to a non-TLS endpoint or a URL with embedded credentials.
+            try:
+                parsed_host = urlsplit(host)
+                valid_host = (parsed_host.scheme == "https" and bool(parsed_host.hostname)
+                              and not parsed_host.username and not parsed_host.password
+                              and not parsed_host.query and not parsed_host.fragment
+                              and parsed_host.path in ("", "/v1"))
+            except ValueError:
+                valid_host = False
+            if not valid_host:
+                return None, "ai_invalid_configuration"
+            api_key = str(settings.get("api_key", "")).strip()
+            if not api_key:
+                return None, "ai_missing_api_key"
+            url = host + ("/chat/completions" if parsed_host.path.rstrip("/") == "/v1" else "/v1/chat/completions")
+            payload = {"model": settings.get("model"), "stream": False, "messages": [{"role": "user", "content": prompt}]}
+            headers = {"Authorization": f"Bearer {api_key}", "User-Agent": f"Herald/{VERSION}"}
+        elif provider == "ollama":
+            url = host + "/api/generate"
+            payload = {
+                "model": settings.get("model"), "stream": False, "format": "json",
+                "options": {"temperature": 0.35}, "prompt": prompt,
+            }
+            headers = None
+        else:
+            return None, "ai_invalid_configuration"
         try:
-            async with self._session.post(url, json=payload, timeout=20) as response:
+            async with self._session.post(url, json=payload, headers=headers, timeout=20) as response:
                 response.raise_for_status()
                 data = await response.json()
-        except (ClientError, TimeoutError, ValueError) as err:
-            _LOGGER.debug("Herald AI call failed: %s", err)
+        except (ClientError, TimeoutError, ValueError):
+            _LOGGER.debug("Herald AI call failed (%s)", provider)
             return None, "ai_request_failed"
 
-        raw_response = str(data.get("response", "")).strip()
+        if not isinstance(data, dict):
+            return None, "ai_invalid_payload"
+        if provider == "openai":
+            choices = data.get("choices")
+            message = choices[0].get("message") if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
+            raw_response = message.get("content") if isinstance(message, dict) else None
+        else:
+            raw_response = data.get("response")
+        if not isinstance(raw_response, str):
+            return None, "ai_invalid_payload"
+        raw_response = raw_response.strip()
         if not raw_response:
             return None, "ai_empty_response"
         try:
             parsed = json.loads(raw_response)
         except json.JSONDecodeError:
-            _LOGGER.debug("Herald AI returned non-JSON payload: %s", raw_response)
+            _LOGGER.debug("Herald AI returned non-JSON payload (%s)", provider)
             return None, "ai_invalid_json"
         if not isinstance(parsed, dict):
             return None, "ai_invalid_payload"

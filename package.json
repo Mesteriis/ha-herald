@@ -4,7 +4,9 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build-frontend.mjs",
-    "check": "node --check frontend/herald-card.js"
+    "check": "node --check frontend/herald-card.js && node --check frontend/herald-dashboard.js && node --check frontend/dashboard-model.js && node --check scripts/build-frontend.mjs",
+    "build:check": "node scripts/build-frontend.mjs --check",
+    "test:frontend": "node --test frontend/tests/*.test.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.1",

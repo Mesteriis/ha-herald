@@ -1,10 +1,13 @@
 {
   "title": "Herald Notification Center",
   "config": {
+    "error": {
+      "invalid_time": "Introduce una hora válida en formato HH:MM (00:00–23:59)."
+    },
     "step": {
       "user": {
         "title": "Herald Notification Center",
-        "description": "Crea la entrada de Herald Notification Framework.",
+        "description": "Configura la entrega de notificaciones de Herald y la generación opcional de texto.",
         "data": {
           "name": "Nombre",
           "host": "Host de Ollama",
@@ -15,75 +18,281 @@
       }
     },
     "abort": {
+      "invalid_quiet_hours": "Introduce una hora válida en formato HH:MM (00:00–23:59).",
       "single_instance_allowed": "Solo se admite una instancia de Herald."
     }
   },
   "options": {
+    "error": {
+      "invalid_time": "Introduce una hora válida en formato HH:MM (00:00–23:59).",
+      "invalid_selection": "Selecciona un elemento disponible de la lista.",
+      "invalid_value": "Revisa el formato y los valores permitidos para este campo.",
+      "invalid_host": "Para una API compatible con OpenAI, usa una URL base HTTPS, opcionalmente terminada en /v1."
+    },
     "step": {
       "init": {
-        "title": "Opciones de Herald",
-        "description": "Ajusta Ollama, las horas silenciosas, la policy de mantenimiento, los umbrales por canal y las politicas por flujo.",
+        "title": "Ajustes de Herald",
+        "description": "Elige una sección. Al guardar se cierra el diálogo y solo cambian los campos editados; los demás ajustes se conservan.",
+        "menu_options": {
+          "quiet_hours": "Horas silenciosas",
+          "ai": "Generación de texto",
+          "maintenance": "Modo de mantenimiento",
+          "channel_select": "Canales de entrega",
+          "flow_select": "Flujos de notificaciones"
+        }
+      },
+      "quiet_hours": {
+        "title": "Horas silenciosas",
+        "description": "Define el horario silencioso según la hora local de Home Assistant. Los canales y las reglas determinan qué entregas se permiten.",
         "data": {
-          "host": "Host de Ollama",
-          "model": "Modelo de Ollama",
           "start": "Inicio de horas silenciosas",
-          "end": "Fin de horas silenciosas",
-          "maintenance_mode_entity": "Entidad de mantenimiento",
-          "maintenance_min_level": "Nivel minimo en mantenimiento"
+          "end": "Fin de horas silenciosas"
+        },
+        "data_description": {
+          "start": "Usa HH:MM, de 00:00 a 23:59. El intervalo puede cruzar la medianoche.",
+          "end": "Usa HH:MM, de 00:00 a 23:59. El intervalo puede cruzar la medianoche."
+        }
+      },
+      "ai": {
+        "title": "Generación de texto",
+        "description": "Elige Ollama o una API compatible con OpenAI. Guardar no activa la IA ni prueba la conexión. Usa el interruptor de IA de Herald. La clave guardada no se muestra; dejarla en blanco conserva la anterior.",
+        "data": {
+          "provider": "Proveedor",
+          "host": "URL del servidor",
+          "model": "ID del modelo",
+          "api_key": "Clave API (en blanco conserva la anterior)"
+        }
+      },
+      "maintenance": {
+        "title": "Modo de mantenimiento",
+        "description": "Elige una entidad externa opcional para el modo de mantenimiento. El modo está activo si esta entidad o el interruptor de mantenimiento de Herald está activado.",
+        "data": {
+          "maintenance_mode_entity": "Entidad externa de mantenimiento"
+        },
+        "data_description": {
+          "maintenance_mode_entity": "ID de la entidad cuyo estado on activa el mantenimiento. Déjalo vacío para eliminar este vínculo externo; el interruptor de mantenimiento de Herald sigue disponible."
+        }
+      },
+      "channel_select": {
+        "title": "Canales de entrega",
+        "description": "Elige un canal existente. Aquí no se crean canales ni se configuran credenciales de proveedores.",
+        "data": {
+          "channel": "Canal"
+        }
+      },
+      "channel": {
+        "title": "Canal: {channel_name}",
+        "description": "Solo se modifican los ajustes de este canal. Activarlo permite utilizarlo, pero no confirma la entrega.",
+        "data": {
+          "enabled": "Canal activado",
+          "min_level": "Importancia mínima"
+        },
+        "data_description": {
+          "enabled": "Un canal desactivado se excluye de la entrega normal. Una prueba explícita y autorizada del canal puede omitir este ajuste. Las restricciones generales y las reglas siguen vigentes.",
+          "min_level": "Las notificaciones normales por debajo de este umbral se omiten. Una prueba explícita y autorizada puede omitir el umbral del canal; las demás restricciones siguen vigentes."
+        }
+      },
+      "flow_select": {
+        "title": "Flujos de notificaciones",
+        "description": "Elige un flujo existente para ajustar los límites de repetición y el personaje del resumen.",
+        "data": {
+          "flow": "Flujo de notificaciones"
+        }
+      },
+      "flow": {
+        "title": "Flujo: {flow_name}",
+        "description": "Define los valores de este flujo. Una regla puede cambiar el intervalo entre entregas y una solicitud puede cambiar la supresión de duplicados. Guardar no activa los resúmenes.",
+        "data": {
+          "summary_personality": "Personaje del resumen",
+          "cooldown_seconds": "Intervalo entre entregas, segundos",
+          "dedup_window_seconds": "Supresión de duplicados, segundos"
+        },
+        "data_description": {
+          "summary_personality": "Un valor vacío elimina la elección específica para resúmenes. Se usará el personaje de la solicitud, del flujo o el predeterminado.",
+          "cooldown_seconds": "Omite notificaciones durante este intervalo tras la última entrega del flujo. 0 desactiva este límite. No se aplaza el envío.",
+          "dedup_window_seconds": "Omite eventos repetidos coincidentes dentro de este intervalo. 0 desactiva este filtro. No se aplaza el envío."
         }
       }
+    },
+    "abort": {
+      "no_channels": "No hay canales disponibles para editar. Revisa la configuración de canales de Herald.",
+      "no_flows": "No hay flujos de notificaciones disponibles para editar.",
+      "channel_unavailable": "Este canal ya no está disponible. Abre los ajustes de nuevo y elige un canal disponible.",
+      "flow_unavailable": "Este flujo ya no está disponible. Abre los ajustes de nuevo y elige un flujo disponible."
     }
   },
   "entity": {
     "sensor": {
-      "status": {"name": "Estado"},
-      "notifications_today": {"name": "Notificaciones de hoy"},
-      "deliveries_today": {"name": "Entregadas hoy"},
-      "dropped_today": {"name": "Descartadas hoy"},
-      "errors_today": {"name": "Errores de hoy"},
-      "ai_requests_today": {"name": "Solicitudes AI de hoy"},
-      "last_notification": {"name": "Ultima notificacion"},
-      "queue_size": {"name": "Tamano de la cola"}
+      "status": {
+        "name": "Estado"
+      },
+      "notifications_today": {
+        "name": "Notificaciones de hoy"
+      },
+      "deliveries_today": {
+        "name": "Entregadas hoy"
+      },
+      "dropped_today": {
+        "name": "Descartadas hoy"
+      },
+      "errors_today": {
+        "name": "Errores de hoy"
+      },
+      "ai_requests_today": {
+        "name": "Solicitudes AI de hoy"
+      },
+      "last_notification": {
+        "name": "Ultima notificacion"
+      },
+      "queue_size": {
+        "name": "Tamano de la cola"
+      }
     },
     "binary_sensor": {
-      "room_presence_sensor": {"name": "Presencia de Herald en la habitacion {room_name}"}
+      "room_presence_sensor": {
+        "name": "Presencia de Herald en la habitacion {room_name}"
+      }
     },
     "switch": {
-      "ai_enabled": {"name": "AI de Herald activado"},
-      "level_info": {"name": "Nivel info de Herald"},
-      "level_warning": {"name": "Nivel warning de Herald"},
-      "level_critical": {"name": "Nivel critical de Herald"},
-      "maintenance_mode": {"name": "Modo de mantenimiento de Herald"},
-      "mute_all": {"name": "Mute all de Herald"},
-      "dashboard_sidebar": {"name": "Dashboard de Herald en la barra lateral"},
-      "ai_info": {"name": "AI de Herald para info"},
-      "ai_warning": {"name": "AI de Herald para warning"},
-      "ai_critical": {"name": "AI de Herald para critical"},
-      "channel_voice": {"name": "Canales de voz de Herald"},
-      "channel_push": {"name": "Canales push de Herald"},
-      "channel_tv": {"name": "Canales TV de Herald"},
-      "room_presence_switch": {"name": "Presencia fallback de Herald para la habitacion {room_name}"},
-      "user_silent": {"name": "Modo silencioso de Herald para {user_name}"},
-      "flow_enabled": {"name": "Flujo {flow_name} de Herald activado"},
-      "channel_enabled": {"name": "Canal {channel_name} de Herald activado"}
+      "ai_enabled": {
+        "name": "AI de Herald activado"
+      },
+      "level_info": {
+        "name": "Nivel info de Herald"
+      },
+      "level_warning": {
+        "name": "Nivel warning de Herald"
+      },
+      "level_critical": {
+        "name": "Nivel critical de Herald"
+      },
+      "maintenance_mode": {
+        "name": "Modo de mantenimiento de Herald"
+      },
+      "mute_all": {
+        "name": "Mute all de Herald"
+      },
+      "dashboard_sidebar": {
+        "name": "Dashboard de Herald en la barra lateral"
+      },
+      "ai_info": {
+        "name": "AI de Herald para info"
+      },
+      "ai_warning": {
+        "name": "AI de Herald para warning"
+      },
+      "ai_critical": {
+        "name": "AI de Herald para critical"
+      },
+      "channel_voice": {
+        "name": "Canales de voz de Herald"
+      },
+      "channel_push": {
+        "name": "Canales push de Herald"
+      },
+      "channel_tv": {
+        "name": "Canales TV de Herald"
+      },
+      "room_presence_switch": {
+        "name": "Presencia fallback de Herald para la habitacion {room_name}"
+      },
+      "user_silent": {
+        "name": "Modo silencioso de Herald para {user_name}"
+      },
+      "flow_enabled": {
+        "name": "Flujo {flow_name} de Herald activado"
+      },
+      "channel_enabled": {
+        "name": "Canal {channel_name} de Herald activado"
+      }
     },
     "select": {
-      "maintenance_min_level": {"name": "Nivel minimo de mantenimiento de Herald"},
-      "room_audio_target": {"name": "Dispositivo de notificacion de Herald para la habitacion {room_name}"},
-      "user_language": {"name": "Idioma de Herald para {user_name}"},
-      "user_character": {"name": "Personaje de Herald para {user_name}"},
-      "channel_min_level": {"name": "Nivel minimo del canal {channel_name} de Herald"}
+      "maintenance_min_level": {
+        "name": "Nivel minimo de mantenimiento de Herald"
+      },
+      "room_audio_target": {
+        "name": "Dispositivo de notificacion de Herald para la habitacion {room_name}"
+      },
+      "user_language": {
+        "name": "Idioma de Herald para {user_name}"
+      },
+      "user_character": {
+        "name": "Personaje de Herald para {user_name}"
+      },
+      "channel_min_level": {
+        "name": "Nivel minimo del canal {channel_name} de Herald"
+      }
     },
     "number": {
-      "flow_summary_window": {"name": "Ventana de resumen del flujo {flow_name} de Herald"},
-      "flow_dedup_window": {"name": "Ventana dedup del flujo {flow_name} de Herald"},
-      "flow_cooldown": {"name": "Cooldown del flujo {flow_name} de Herald"}
+      "flow_summary_window": {
+        "name": "Ventana de resumen del flujo {flow_name} de Herald"
+      },
+      "flow_dedup_window": {
+        "name": "Ventana dedup del flujo {flow_name} de Herald"
+      },
+      "flow_cooldown": {
+        "name": "Cooldown del flujo {flow_name} de Herald"
+      }
     },
     "button": {
-      "test_level_info": {"name": "Prueba de nivel info de Herald"},
-      "test_level_warning": {"name": "Prueba de nivel warning de Herald"},
-      "test_level_critical": {"name": "Prueba de nivel critical de Herald"},
-      "channel_test": {"name": "Prueba del canal {channel_name} de Herald"}
+      "test_level_info": {
+        "name": "Prueba de nivel info de Herald"
+      },
+      "test_level_warning": {
+        "name": "Prueba de nivel warning de Herald"
+      },
+      "test_level_critical": {
+        "name": "Prueba de nivel critical de Herald"
+      },
+      "channel_test": {
+        "name": "Prueba del canal {channel_name} de Herald"
+      }
+    }
+  },
+  "services": {
+    "preview_notification_policy": {
+      "name": "Preview notification rule",
+      "description": "Preview a draft without saving or sending. Scenarios change routing context; real states and time remain current.",
+      "fields": {
+        "notification_key": {
+          "name": "Notification key"
+        },
+        "policy": {
+          "name": "Unsaved rule"
+        },
+        "scenario": {
+          "name": "Scenario"
+        },
+        "message": {
+          "name": "Example message"
+        }
+      }
+    },
+    "set_notification_policy": {
+      "name": "Configurar regla de notificación",
+      "description": "Actualiza los campos seleccionados. Los campos omitidos conservan sus valores guardados.",
+      "fields": {
+        "users": {
+          "name": "Destinatarios de mensajes personales",
+          "description": "Identificadores person; null hereda, una lista vacía bloquea todos los envíos. Los canales comunes y el audio siguen siendo compartidos."
+        },
+        "target_room": {
+          "name": "Habitación para voz y TV",
+          "description": "Habitación conocida; null hereda. Sin recurrir a otra habitación."
+        },
+        "presence": {
+          "name": "Condición de presencia",
+          "description": "Siempre, solo cuando hay alguien en casa o solo cuando no hay nadie."
+        },
+        "quiet_hours": {
+          "name": "Durante las horas de silencio",
+          "description": "Heredar restricciones, conservar canales de texto permitidos u omitir. No aplaza el envío."
+        }
+      }
+    },
+    "configuration_check": {
+      "name": "Comprobar la configuración de notificaciones",
+      "description": "Revisa ajustes locales, servicios, entidades y restricciones sin enviar, cambiar ajustes ni invocar IA. No prueba credenciales ni conexiones con proveedores."
     }
   }
 }

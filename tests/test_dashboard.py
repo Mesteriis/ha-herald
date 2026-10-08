@@ -22,6 +22,15 @@ class _FakePresence:
         }
 
 
+def test_dashboard_preset_is_self_contained_and_scoped_to_entry():
+    fake = SimpleNamespace(entry=SimpleNamespace(entry_id="fixture_entry"))
+    config = HeraldCoordinator._build_dashboard_payload(fake, title="Herald", preset="dashboard")
+    assert config["views"] == [{
+        "title": "Herald", "path": "herald", "icon": "mdi:bell-badge-outline", "type": "panel",
+        "cards": [{"type": "custom:ha-herald-dashboard", "entry_id": "fixture_entry"}],
+    }]
+
+
 def test_dashboard_yaml_includes_room_sensors_and_fallback_switches() -> None:
     fake = SimpleNamespace(
         config=HeraldConfig.from_raw(
@@ -65,7 +74,7 @@ def test_dashboard_yaml_includes_room_sensors_and_fallback_switches() -> None:
 
     rendered = HeraldCoordinator._build_dashboard_yaml(fake, title="Herald Control Center", preset="rooms")
 
-    assert "type: custom:herald-card" not in rendered
+    assert "type: custom:herald-card" in rendered
     assert "binary_sensor.herald_room_living_room_presence" in rendered
     assert "switch.herald_room_living_room_presence" in rendered
     assert "select.herald_room_living_room_audio_target" in rendered
@@ -102,6 +111,8 @@ def test_dashboard_feed_is_persisted_in_snapshot() -> None:
         queue_size=1,
     )
     fake = SimpleNamespace(
+        hass=SimpleNamespace(data={}),
+        entry=SimpleNamespace(entry_id="synthetic_entry"),
         _state=state,
         config=HeraldConfig.from_raw(
             {
@@ -119,7 +130,7 @@ def test_dashboard_feed_is_persisted_in_snapshot() -> None:
             dashboard_cards=lambda: [],
             diagnostic_summary=lambda: {},
         ),
-        controls=SimpleNamespace(is_mute_all_enabled=lambda: False),
+        controls=SimpleNamespace(is_mute_all_enabled=lambda: False, effective_settings=lambda: {}),
         _append_trace=lambda item: traces.append(item),
         _history_limit=lambda: 20,
         _control_summary=lambda: {
@@ -140,6 +151,11 @@ def test_dashboard_feed_is_persisted_in_snapshot() -> None:
         is_flow_enabled=lambda name: True,
         _maintenance_mode_active=lambda: False,
         _runtime_status=lambda presence: "ready",
+        _build_topology_snapshot=lambda presence: {"channels": []},
+        configuration_check=lambda **kwargs: {"schema_version": 1, "channels": []},
+        notification_registry_summary=lambda: {},
+        notification_registry_snapshot=lambda: {},
+        _notification_policy_overrides={},
     )
     context = NotificationContext(
         flow="system_events",
