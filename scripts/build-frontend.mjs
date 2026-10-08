@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gzipSync } from "node:zlib";
+import { gzipSync, gunzipSync } from "node:zlib";
 import { build } from "esbuild";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -33,7 +33,12 @@ for (const [relativePath, contents] of outputs) {
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
-    if (!current?.equals(contents)) {
+    // Deflate output differs between Node/zlib versions. Verify the payload,
+    // rather than treating equivalent compression as a stale frontend.
+    const matches = relativePath.endsWith(".gz")
+      ? current && gunzipSync(current).equals(bundle)
+      : current?.equals(contents);
+    if (!matches) {
       throw new Error(`${relativePath} is stale or missing. Run npm run build and commit both generated files.`);
     }
   } else {

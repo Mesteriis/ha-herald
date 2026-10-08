@@ -1,6 +1,6 @@
 # Release validation
 
-Run from an isolated repository checkout, using Python 3.11+ and Node.js 20+:
+Run from an isolated repository checkout, using Python 3.14+ and Node.js 20+:
 
 ```bash
 python3 -m pip install pytest pytest-asyncio ruff voluptuous aiohttp PyYAML Jinja2
